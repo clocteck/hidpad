@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "0.4.0"
+#define HIDPAD_VERSION "0.4.1"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 8
@@ -25,6 +25,10 @@
 #define UUID_REPORT 0x2a4du
 #define UUID_CCCD 0x2902u
 #define UUID_REPORT_REFERENCE 0x2908u
+
+#define UUID_HID_TEXT_16 "1812"
+#define UUID_HID_TEXT_128 "00001812-0000-1000-8000-00805f9b34fb"
+#define HIDPAD_Q36_INIT_ATTEMPTS 2u
 
 #define BTN_UP (1u << 0)
 #define BTN_DOWN (1u << 1)
@@ -75,6 +79,7 @@ typedef enum pending_read_t {
 
 typedef struct report_characteristic_t {
     uint16_t value_handle;
+    uint16_t descriptor_end_handle;
     uint8_t properties;
     uint16_t cccd_handle;
     uint16_t reference_handle;
@@ -157,9 +162,16 @@ typedef struct hidpad_instance_t {
     uint8_t control_point_properties;
     report_characteristic_t reports[HIDPAD_MAX_REPORTS];
     uint8_t report_count;
+    uint8_t descriptor_index;
+    uint8_t open_report_index;
     uint8_t reference_index;
     uint8_t subscribe_index;
+    uint8_t subscribed_count;
     uint8_t input_poll_index;
+    uint8_t hid_init_attempt;
+    uint8_t service_uuid_variant;
+    uint8_t report_map_valid;
+    uint16_t controls_report_handle;
     pending_read_t pending_read;
     uint8_t pending_report_index;
     hidpad_report_parser_t parser;
@@ -390,9 +402,16 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->next_keepalive_ms = 0;
     zero_bytes(inst->reports, sizeof(inst->reports));
     inst->report_count = 0;
+    inst->descriptor_index = 0;
+    inst->open_report_index = 0xff;
     inst->reference_index = 0;
     inst->subscribe_index = 0;
+    inst->subscribed_count = 0;
     inst->input_poll_index = 0;
+    inst->hid_init_attempt = 0;
+    inst->service_uuid_variant = 0;
+    inst->report_map_valid = 0;
+    inst->controls_report_handle = 0;
     inst->pending_read = PENDING_READ_NONE;
     inst->pending_report_index = 0;
     hidpad_parser_clear(&inst->parser);
@@ -471,6 +490,33 @@ static void apply_decoded(hidpad_instance_t *inst,
     old_ry = inst->state.ry;
     old_lt = inst->state.lt;
     old_rt = inst->state.rt;
+    if (inst->profile == DEVICE_PROFILE_Q36) {
+        uint32_t decoded_buttons = decoded->buttons | decoded->consumer_buttons;
+        /* Match the old Q36 controller: Report ID 3 is merged as Consumer
+         * state; every other report replaces the complete gamepad state. */
+        if (decoded->report_id == 3) {
+            inst->consumer_buttons = decoded_buttons;
+        } else {
+            inst->game_buttons = decoded_buttons;
+            inst->state.raw_buttons = decoded->raw_buttons;
+            inst->state.lx = decoded->lx;
+            inst->state.ly = decoded->ly;
+            inst->state.rx = decoded->rx;
+            inst->state.ry = decoded->ry;
+            inst->state.lt = decoded->lt;
+            inst->state.rt = decoded->rt;
+        }
+        inst->state.buttons = inst->game_buttons | inst->consumer_buttons;
+        inst->state.report_id = decoded->report_id;
+        copy_raw_report(&inst->state, raw, raw_len);
+        if (old_buttons != inst->state.buttons || old_raw_buttons != inst->state.raw_buttons ||
+            old_lx != inst->state.lx || old_ly != inst->state.ly ||
+            old_rx != inst->state.rx || old_ry != inst->state.ry ||
+            old_lt != inst->state.lt || old_rt != inst->state.rt) {
+            mark_dirty(inst);
+        }
+        return;
+    }
     if (report) {
         if ((decoded->valid_mask & HIDPAD_VALID_GAME_BUTTONS) != 0) {
             report->game_buttons = decoded->buttons;
@@ -574,6 +620,7 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
         return 1;
     }
     profile = inst->profile == DEVICE_PROFILE_Q36 ? HIDPAD_PROFILE_Q36 : HIDPAD_PROFILE_GENERIC;
+    if (profile == HIDPAD_PROFILE_Q36 && !inst->parser.has_report_id) report_id = 0;
     decoded_ok = hidpad_parser_decode(&inst->parser, report_id, data, len, profile, decoded);
     if (!decoded_ok) {
         copy_raw_report(&inst->state, data, len);
@@ -695,6 +742,89 @@ static int start_read(hidpad_instance_t *inst, uint16_t handle,
 }
 
 static void begin_subscribe(hidpad_instance_t *inst);
+static void start_hid_service_discovery(hidpad_instance_t *inst);
+static void read_next_reference(hidpad_instance_t *inst);
+
+static void fail_hid_initialization(hidpad_instance_t *inst, const char *error)
+{
+    uint8_t next_attempt;
+    if (!inst) return;
+    if (inst->profile == DEVICE_PROFILE_Q36 &&
+        inst->hid_init_attempt + 1u < HIDPAD_Q36_INIT_ATTEMPTS) {
+        next_attempt = (uint8_t)(inst->hid_init_attempt + 1u);
+        reset_gatt(inst);
+        inst->hid_init_attempt = next_attempt;
+        start_hid_service_discovery(inst);
+        return;
+    }
+    set_error(inst, error);
+    inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+}
+
+static int report_is_subscription_candidate(const hidpad_instance_t *inst,
+                                            const report_characteristic_t *report)
+{
+    if (!inst || !report || !report->cccd_handle) return 0;
+    if (inst->profile == DEVICE_PROFILE_XBOX) {
+        return report->value_handle == inst->controls_report_handle;
+    }
+    return (report->report_type == 0 || report->report_type == 1) &&
+           (report->properties &
+            (MODULE_BLE_CHAR_PROP_NOTIFY | MODULE_BLE_CHAR_PROP_INDICATE)) != 0;
+}
+
+static void finish_subscribe(hidpad_instance_t *inst)
+{
+    if (!inst) return;
+    if ((inst->profile == DEVICE_PROFILE_Q36 || inst->profile == DEVICE_PROFILE_XBOX) &&
+        inst->subscribed_count == 0) {
+        fail_hid_initialization(inst, "No notifiable HID input report");
+        return;
+    }
+    inst->phase = PHASE_READY;
+    if (inst->host->ble.gap_set_connection_params) {
+        (void)inst->host->ble.gap_set_connection_params(
+            inst->session, inst->conn_handle,
+            HIDPAD_CONN_INTERVAL_MIN, HIDPAD_CONN_INTERVAL_MAX,
+            HIDPAD_CONN_LATENCY, HIDPAD_CONN_SUPERVISION_TIMEOUT);
+    }
+    inst->next_input_poll_ms = now_ms(inst) + 80;
+    inst->next_keepalive_ms = now_ms(inst);
+    mark_status_dirty(inst);
+}
+
+static void begin_report_map_and_reference_reads(hidpad_instance_t *inst)
+{
+    if (!inst) return;
+    inst->reference_index = 0;
+    inst->report_map_valid = 0;
+    if (inst->report_map_handle &&
+        start_read(inst, inst->report_map_handle, PENDING_READ_MAP, 0)) {
+        inst->phase = PHASE_READ_REPORT_MAP;
+    } else if (inst->profile == DEVICE_PROFILE_Q36) {
+        fail_hid_initialization(inst, "Q36 HID report map not readable");
+    } else {
+        read_next_reference(inst);
+    }
+}
+
+static void discover_next_report_descriptors(hidpad_instance_t *inst)
+{
+    if (!inst) return;
+    while (inst->descriptor_index < inst->report_count) {
+        report_characteristic_t *report = &inst->reports[inst->descriptor_index];
+        uint16_t end_handle = report->descriptor_end_handle;
+        if (end_handle < report->value_handle) end_handle = report->value_handle;
+        if (inst->host->ble.gattc_discover_descriptors(
+                inst->session, inst->conn_handle,
+                report->value_handle, end_handle) == MODULE_OK) {
+            inst->phase = PHASE_DISCOVER_DESCRIPTORS;
+            return;
+        }
+        inst->descriptor_index++;
+    }
+    begin_report_map_and_reference_reads(inst);
+}
 
 static void read_next_reference(hidpad_instance_t *inst)
 {
@@ -717,12 +847,7 @@ static void subscribe_next(hidpad_instance_t *inst)
         report_characteristic_t *report = &inst->reports[inst->subscribe_index];
         uint8_t value[2] = {1, 0};
         int32_t err;
-        if (report->report_type != 0 && report->report_type != 1) {
-            inst->subscribe_index++;
-            continue;
-        }
-        if (!report->cccd_handle ||
-            (report->properties & (MODULE_BLE_CHAR_PROP_NOTIFY | MODULE_BLE_CHAR_PROP_INDICATE)) == 0) {
+        if (!report_is_subscription_candidate(inst, report)) {
             inst->subscribe_index++;
             continue;
         }
@@ -733,22 +858,28 @@ static void subscribe_next(hidpad_instance_t *inst)
         if (err == MODULE_OK) return;
         inst->subscribe_index++;
     }
-    inst->phase = PHASE_READY;
-    if (inst->host->ble.gap_set_connection_params) {
-        (void)inst->host->ble.gap_set_connection_params(
-            inst->session, inst->conn_handle,
-            HIDPAD_CONN_INTERVAL_MIN, HIDPAD_CONN_INTERVAL_MAX,
-            HIDPAD_CONN_LATENCY, HIDPAD_CONN_SUPERVISION_TIMEOUT);
-    }
-    inst->next_input_poll_ms = now_ms(inst) + 80;
-    inst->next_keepalive_ms = now_ms(inst);
-    mark_status_dirty(inst);
+    finish_subscribe(inst);
 }
 
 static void begin_subscribe(hidpad_instance_t *inst)
 {
+    uint8_t i;
     inst->phase = PHASE_SUBSCRIBE;
     inst->subscribe_index = 0;
+    inst->subscribed_count = 0;
+    inst->controls_report_handle = 0;
+    if (inst->profile == DEVICE_PROFILE_XBOX) {
+        /* The old LiteXboxController selected only the first 0x2A4D
+         * characteristic that can notify. */
+        for (i = 0; i < inst->report_count; ++i) {
+            report_characteristic_t *report = &inst->reports[i];
+            if (report->cccd_handle &&
+                (report->properties & MODULE_BLE_CHAR_PROP_NOTIFY) != 0) {
+                inst->controls_report_handle = report->value_handle;
+                break;
+            }
+        }
+    }
     subscribe_next(inst);
 }
 
@@ -855,6 +986,35 @@ static void handle_scan_result(hidpad_instance_t *inst, const module_ble_event_t
     if (!connect_device(inst, device)) schedule_rescan_with_backoff(inst);
 }
 
+static int advance_q36_service_discovery(hidpad_instance_t *inst)
+{
+    uint8_t next_attempt;
+    if (!inst || inst->profile != DEVICE_PROFILE_Q36) return 0;
+    if (inst->service_uuid_variant == 0) {
+        inst->service_uuid_variant = 1;
+        return 1;
+    }
+    if (inst->hid_init_attempt + 1u >= HIDPAD_Q36_INIT_ATTEMPTS) return 0;
+    next_attempt = (uint8_t)(inst->hid_init_attempt + 1u);
+    reset_gatt(inst);
+    inst->hid_init_attempt = next_attempt;
+    return 1;
+}
+
+static int request_hid_service_discovery(hidpad_instance_t *inst)
+{
+    const char *uuid;
+    if (!inst) return 0;
+    for (;;) {
+        inst->hid_start = 0;
+        inst->hid_end = 0;
+        uuid = inst->service_uuid_variant == 0 ? UUID_HID_TEXT_16 : UUID_HID_TEXT_128;
+        if (inst->host->ble.gattc_discover_services(
+                inst->session, inst->conn_handle, uuid) == MODULE_OK) return 1;
+        if (!advance_q36_service_discovery(inst)) return 0;
+    }
+}
+
 static void start_hid_service_discovery(hidpad_instance_t *inst)
 {
     if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) return;
@@ -862,8 +1022,7 @@ static void start_hid_service_discovery(hidpad_instance_t *inst)
     inst->state.disconnect_reason = 0;
     inst->phase = PHASE_DISCOVER_SERVICES;
     mark_status_dirty(inst);
-    if (inst->host->ble.gattc_discover_services(
-            inst->session, inst->conn_handle, "1812") != MODULE_OK) {
+    if (!request_hid_service_discovery(inst)) {
         set_error(inst, "HID service discovery failed");
         inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
     }
@@ -972,17 +1131,29 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         break;
     case MODULE_BLE_IRQ_GATTC_SERVICE_DONE:
         if (!inst->hid_start || !inst->hid_end) {
-            set_error(inst, "HID 0x1812 service not found");
-            inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+            if (!advance_q36_service_discovery(inst) ||
+                !request_hid_service_discovery(inst)) {
+                set_error(inst, "HID 0x1812 service not found");
+                inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+            }
         } else {
             inst->phase = PHASE_DISCOVER_CHARACTERISTICS;
             if (inst->host->ble.gattc_discover_characteristics(inst->session, inst->conn_handle,
                     inst->hid_start, inst->hid_end, NULL) != MODULE_OK) {
-                set_error(inst, "HID characteristic discovery failed");
+                fail_hid_initialization(inst, "HID characteristic discovery failed");
             }
         }
         break;
     case MODULE_BLE_IRQ_GATTC_CHARACTERISTIC_RESULT:
+        /* ble_gattc_disc_all_dscs associates every result with the start
+         * handle supplied by the caller. Close the preceding Report range
+         * at the next characteristic definition so each Report can be
+         * discovered separately below. */
+        if (inst->open_report_index < inst->report_count && event->def_handle > 0) {
+            inst->reports[inst->open_report_index].descriptor_end_handle =
+                (uint16_t)(event->def_handle - 1u);
+            inst->open_report_index = 0xff;
+        }
         if (uuid_is16(event->uuid, UUID_REPORT_MAP)) {
             inst->report_map_handle = event->value_handle;
         } else if (uuid_is16(event->uuid, UUID_HID_CONTROL_POINT)) {
@@ -991,19 +1162,17 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         } else if (uuid_is16(event->uuid, UUID_REPORT) && inst->report_count < HIDPAD_MAX_REPORTS) {
             report = &inst->reports[inst->report_count++];
             report->value_handle = event->value_handle;
+            report->descriptor_end_handle = inst->hid_end;
             report->properties = event->properties;
+            inst->open_report_index = (uint8_t)(inst->report_count - 1u);
         }
         break;
     case MODULE_BLE_IRQ_GATTC_CHARACTERISTIC_DONE:
         if (inst->report_count == 0) {
-            set_error(inst, "HID input report not found");
-            inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+            fail_hid_initialization(inst, "HID input report not found");
         } else {
-            inst->phase = PHASE_DISCOVER_DESCRIPTORS;
-            if (inst->host->ble.gattc_discover_descriptors(inst->session, inst->conn_handle,
-                    inst->hid_start, inst->hid_end) != MODULE_OK) {
-                set_error(inst, "HID descriptor discovery failed");
-            }
+            inst->descriptor_index = 0;
+            discover_next_report_descriptors(inst);
         }
         break;
     case MODULE_BLE_IRQ_GATTC_DESCRIPTOR_RESULT:
@@ -1012,16 +1181,13 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         if (report && uuid_is16(event->uuid, UUID_REPORT_REFERENCE)) report->reference_handle = event->descriptor_handle;
         break;
     case MODULE_BLE_IRQ_GATTC_DESCRIPTOR_DONE:
-        inst->reference_index = 0;
-        if (inst->report_map_handle && start_read(inst, inst->report_map_handle, PENDING_READ_MAP, 0)) {
-            inst->phase = PHASE_READ_REPORT_MAP;
-        } else {
-            read_next_reference(inst);
-        }
+        inst->descriptor_index++;
+        discover_next_report_descriptors(inst);
         break;
     case MODULE_BLE_IRQ_GATTC_READ_RESULT:
         if (inst->pending_read == PENDING_READ_MAP) {
-            hidpad_parser_parse(&inst->parser, event->data, event->data_len);
+            inst->report_map_valid = hidpad_parser_parse(
+                &inst->parser, event->data, event->data_len) ? 1 : 0;
         } else if (inst->pending_read == PENDING_READ_REFERENCE &&
                    inst->pending_report_index < inst->report_count && event->data_len >= 2) {
             report = &inst->reports[inst->pending_report_index];
@@ -1036,7 +1202,11 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
     case MODULE_BLE_IRQ_GATTC_READ_DONE:
         if (inst->pending_read == PENDING_READ_MAP) {
             inst->pending_read = PENDING_READ_NONE;
-            read_next_reference(inst);
+            if (inst->profile == DEVICE_PROFILE_Q36 && !inst->report_map_valid) {
+                fail_hid_initialization(inst, "Q36 HID report map parse failed");
+            } else {
+                read_next_reference(inst);
+            }
         } else if (inst->pending_read == PENDING_READ_REFERENCE) {
             inst->pending_read = PENDING_READ_NONE;
             inst->reference_index++;
@@ -1051,6 +1221,7 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         if (inst->phase == PHASE_SUBSCRIBE) {
             if (inst->subscribe_index < inst->report_count && event->status == 0) {
                 inst->reports[inst->subscribe_index].subscribed = 1;
+                inst->subscribed_count++;
             }
             inst->subscribe_index++;
             subscribe_next(inst);
@@ -1058,7 +1229,10 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         break;
     case MODULE_BLE_IRQ_GATTC_NOTIFY:
         report = find_report(inst, event->value_handle);
-        if (report) decode_hid(inst, report, event->data, event->data_len);
+        if (report && (inst->profile != DEVICE_PROFILE_XBOX ||
+                       report->value_handle == inst->controls_report_handle)) {
+            decode_hid(inst, report, event->data, event->data_len);
+        }
         break;
     case MODULE_BLE_IRQ_ENCRYPTION_UPDATE:
         inst->state.encrypted = event->encrypted;
@@ -1081,7 +1255,8 @@ static void poll_input_fallback(hidpad_instance_t *inst)
 {
     uint8_t checked = 0;
     uint32_t now = now_ms(inst);
-    if (inst->phase != PHASE_READY || inst->pending_read != PENDING_READ_NONE ||
+    if (inst->profile == DEVICE_PROFILE_Q36 || inst->profile == DEVICE_PROFILE_XBOX ||
+        inst->phase != PHASE_READY || inst->pending_read != PENDING_READ_NONE ||
         (int32_t)(now - inst->next_input_poll_ms) < 0) return;
     inst->next_input_poll_ms = now + 80;
     while (checked++ < inst->report_count) {
@@ -1102,7 +1277,8 @@ static void poll_keepalive(hidpad_instance_t *inst)
 {
     uint32_t now;
     uint8_t i;
-    if (!inst || inst->phase != PHASE_READY || !inst->state.connected) return;
+    if (!inst || inst->profile == DEVICE_PROFILE_Q36 || inst->profile == DEVICE_PROFILE_XBOX ||
+        inst->phase != PHASE_READY || !inst->state.connected) return;
     now = now_ms(inst);
     if ((int32_t)(now - inst->next_keepalive_ms) < 0) return;
     inst->next_keepalive_ms = now + HIDPAD_KEEPALIVE_MS;

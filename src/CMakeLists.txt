@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.16)
 
 set(COMPONENTS main)
 
+# Keep the ABI path available in the top-level scope as well as the main
+# component scope; the standalone hidpad.so custom target consumes it here.
+set(MODULE_ABI_DIR "" CACHE PATH "Directory containing module_abi.h")
+if(NOT MODULE_ABI_DIR AND DEFINED ENV{CUBICLUA_ROOT} AND
+   EXISTS "$ENV{CUBICLUA_ROOT}/src/dynmod/module_abi.h")
+    set(MODULE_ABI_DIR "$ENV{CUBICLUA_ROOT}/src/dynmod" CACHE PATH
+        "Directory containing module_abi.h" FORCE)
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(hidpad)
 

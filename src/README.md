@@ -36,14 +36,21 @@ Q36 profile 仍以手柄提供的 HID Report Map 决定字段位置、位宽和�
 - Button Usage `11/12/13/14`：分别映射为 `View/Menu/Home/Share`；
 - `X/Y/Z/Rx/Ry/Rz` 等轴和扳机字段按 Report Map 中的 logical range 归一化。
 
-这是一套兼容性优先的默认规则。某个 `0x1812` 手柄如果使用零起始方向帽
-（`0` 表示“上”、其他值表示其余方向），会与 Q36 的 `0=松开` 约定冲突，后续应为该
-型号增加独立 profile，而不是修改 Q36 规则。
+方向帽保持旧 Q36 固件的行为：Report Map 声明 logical range 为 `1..8` 时按
+`1=上、8=左上` 解释，声明为 `0..7` 时按 `0=上、7=左上` 解释；范围外的值表示松开。
+
+连接链路也保持旧 Q36 行为：先用 16-bit `1812` 查找 HID Service，找不到时改用完整
+Bluetooth Base UUID `00001812-0000-1000-8000-00805f9b34fb`，整套初始化最多执行两次。
+Q36 必须成功读取并解析 Report Map；随后只订阅带 notify/indicate 的 Input Report，
+Report ID `3` 继续作为 Consumer Report 与普通手柄状态合并。Xbox 则和旧
+`LiteXboxController` 一样，只订阅第一个支持 notify 的 `0x2A4D` controls report。
 
 通知订阅通过 descriptor discovery 查找 CCCD，不使用 `value_handle + 1` 猜测。
-没有 notify/indicate 的可读 Input Report 会由驱动低频轮询。
+通用 HID profile 中，没有 notify/indicate 的可读 Input Report 会由驱动低频轮询；
+Q36 和 Xbox 保持旧固件的纯通知链路，不额外轮询 Input Report。
 驱动发现 HID Control Point `0x2A4C` 后，每 15 秒发送一次标准 Exit Suspend 命令；没有
-Control Point 时低频读取可读 Input Report，避免部分手柄在无按键时进入应用层休眠。
+Control Point 时低频读取可读 Input Report，避免部分通用 HID 手柄在无按键时进入应用层
+休眠。Q36 和 Xbox 不启用这条额外保活链路。
 
 ## 运行过程
 

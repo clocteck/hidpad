@@ -241,10 +241,10 @@ static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
                       hidpad_profile_t profile)
 {
     int32_t dir = -1;
-    if (profile == HIDPAD_PROFILE_Q36) {
-        /* Q36-compatible 0x1812 pads use 0 as neutral and 1..8 as directions. */
-        if (raw >= 1 && raw <= 8) dir = raw - 1;
-    } else if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
+    (void)profile;
+    /* Preserve the old Q36 parser: the Report Map logical range decides
+     * whether the hat is 1..8 or 0..7. */
+    if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
         dir = raw - 1;
     } else if (raw >= 0 && raw <= 7) {
         dir = raw;
@@ -465,6 +465,40 @@ static void infer_report(const hidpad_report_parser_t *parser, const uint8_t *da
     }
 }
 
+static void infer_report_q36_legacy(const hidpad_report_parser_t *parser,
+                                    const uint8_t *data, size_t len,
+                                    uint8_t *report_id, uint16_t *base_bits)
+{
+    uint8_t i;
+    uint8_t best_id = 0;
+    int best_score = -1;
+    *report_id = 0;
+    *base_bits = 0;
+    if (!parser->has_report_id || !data || len == 0) return;
+    for (i = 0; i < parser->layout_count; ++i) {
+        if (parser->layouts[i].report_id != 0 &&
+            parser->layouts[i].report_id == data[0]) {
+            *report_id = data[0];
+            *base_bits = 8;
+            return;
+        }
+    }
+    for (i = 0; i < parser->layout_count; ++i) {
+        const hidpad_report_layout_t *layout = &parser->layouts[i];
+        int score = -1;
+        if (layout->report_id == 0) continue;
+        if (len == layout->payload_bytes) score = 100;
+        else if (len == layout->total_bytes) score = 90;
+        else if (len > layout->payload_bytes && len <= (size_t)layout->total_bytes + 1u) score = 60;
+        else if (len >= layout->payload_bytes) score = 20;
+        if (score > best_score) {
+            best_score = score;
+            best_id = layout->report_id;
+        }
+    }
+    *report_id = best_id;
+}
+
 int hidpad_parser_decode(const hidpad_report_parser_t *parser,
                          uint8_t report_id,
                          const uint8_t *data,
@@ -483,7 +517,13 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
     const hidpad_report_layout_t *layout;
     if (!parser || !data || len == 0 || !out) return 0;
     zero_bytes(out, sizeof(*out));
-    if (selected_id == 0) infer_report(parser, data, len, &selected_id, &base_bits);
+    if (selected_id == 0) {
+        if (profile == HIDPAD_PROFILE_Q36) {
+            infer_report_q36_legacy(parser, data, len, &selected_id, &base_bits);
+        } else {
+            infer_report(parser, data, len, &selected_id, &base_bits);
+        }
+    }
     out->report_id = selected_id;
     layout = find_layout(parser, selected_id);
     if (layout && layout->field_count > 0) {
