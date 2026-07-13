@@ -1,0 +1,455 @@
+#include "hid_report_parser.h"
+
+#define USAGE_PAGE_GENERIC_DESKTOP 0x01u
+#define USAGE_PAGE_BUTTON 0x09u
+#define USAGE_PAGE_CONSUMER 0x0cu
+
+#define USAGE_X 0x30u
+#define USAGE_Y 0x31u
+#define USAGE_Z 0x32u
+#define USAGE_RX 0x33u
+#define USAGE_RY 0x34u
+#define USAGE_RZ 0x35u
+#define USAGE_HAT 0x39u
+
+#define BTN_UP (1u << 0)
+#define BTN_DOWN (1u << 1)
+#define BTN_LEFT (1u << 2)
+#define BTN_RIGHT (1u << 3)
+#define BTN_A (1u << 4)
+#define BTN_B (1u << 5)
+#define BTN_X (1u << 6)
+#define BTN_Y (1u << 7)
+#define BTN_LB (1u << 8)
+#define BTN_RB (1u << 9)
+#define BTN_LS (1u << 10)
+#define BTN_RS (1u << 11)
+#define BTN_VIEW (1u << 12)
+#define BTN_MENU (1u << 13)
+#define BTN_SHARE (1u << 14)
+#define BTN_HOME (1u << 15)
+#define BTN_MEDIA (1u << 16)
+#define BTN_VOLUME_UP (1u << 17)
+#define BTN_VOLUME_DOWN (1u << 18)
+#define BTN_VOLUME_MUTE (1u << 19)
+
+typedef struct global_state_t {
+    uint16_t usage_page;
+    int32_t logical_min;
+    int32_t logical_max;
+    uint8_t report_size;
+    uint8_t report_count;
+    uint8_t report_id;
+} global_state_t;
+
+typedef struct local_state_t {
+    uint32_t usages[24];
+    uint8_t usage_count;
+    uint32_t usage_min;
+    uint32_t usage_max;
+    uint8_t has_usage_min;
+    uint8_t has_usage_max;
+} local_state_t;
+
+/* Single BLE owner calls the parser serially; static workspace avoids Lua task stack use. */
+typedef struct parser_workspace_t {
+    global_state_t global;
+    local_state_t local;
+    global_state_t stack[4];
+    uint16_t offsets[HIDPAD_MAX_REPORT_LAYOUTS];
+    uint8_t offset_ids[HIDPAD_MAX_REPORT_LAYOUTS];
+} parser_workspace_t;
+
+static parser_workspace_t s_parse_work;
+
+static void zero_bytes(void *ptr, size_t len)
+{
+    size_t i;
+    uint8_t *bytes = (uint8_t *)ptr;
+    if (!bytes) {
+        return;
+    }
+    for (i = 0; i < len; ++i) {
+        bytes[i] = 0;
+    }
+}
+
+static int32_t sign_extend(uint32_t value, uint8_t item_size)
+{
+    uint8_t bits;
+    uint32_t sign;
+    uint32_t full;
+    if (item_size == 0) {
+        return 0;
+    }
+    if (item_size >= 4) {
+        return (int32_t)value;
+    }
+    bits = (uint8_t)(item_size * 8u);
+    sign = 1u << (bits - 1u);
+    full = 1u << bits;
+    return (value & sign) ? (int32_t)(value - full) : (int32_t)value;
+}
+
+static void split_usage(uint32_t raw, uint16_t default_page, uint16_t *page, uint16_t *usage)
+{
+    if (raw > 0xffffu) {
+        *page = (uint16_t)(raw >> 16);
+        *usage = (uint16_t)raw;
+    } else {
+        *page = default_page;
+        *usage = (uint16_t)raw;
+    }
+}
+
+static int read_bits(const uint8_t *data, size_t len, uint16_t offset,
+                     uint8_t size, int is_signed, int32_t *out)
+{
+    uint8_t bit;
+    uint32_t value = 0;
+    if (!data || !out || size == 0 || size > 31 || (size_t)offset + size > len * 8u) {
+        return 0;
+    }
+    for (bit = 0; bit < size; ++bit) {
+        size_t source = (size_t)offset + bit;
+        if ((data[source / 8u] & (1u << (source % 8u))) != 0) {
+            value |= 1u << bit;
+        }
+    }
+    if (is_signed && (value & (1u << (size - 1u))) != 0) {
+        value -= 1u << size;
+    }
+    *out = (int32_t)value;
+    return 1;
+}
+
+static int16_t normalize_axis(int32_t raw, int32_t min_value, int32_t max_value, int invert)
+{
+    int64_t numerator;
+    int64_t denominator;
+    int64_t value;
+    if (max_value == min_value) {
+        return 0;
+    }
+    numerator = (int64_t)raw * 2 - (int64_t)min_value - (int64_t)max_value;
+    denominator = (int64_t)max_value - (int64_t)min_value;
+    value = numerator * 32767 / denominator;
+    if (invert) {
+        value = -value;
+    }
+    if (value > 32767) value = 32767;
+    if (value < -32767) value = -32767;
+    return (int16_t)value;
+}
+
+static uint16_t normalize_trigger(int32_t raw, int32_t min_value, int32_t max_value)
+{
+    int64_t value;
+    if (max_value == min_value) {
+        return 0;
+    }
+    value = ((int64_t)raw - min_value) * 65535 / ((int64_t)max_value - min_value);
+    if (value < 0) value = 0;
+    if (value > 65535) value = 65535;
+    return (uint16_t)value;
+}
+
+static void apply_button(hidpad_decoded_report_t *out, uint16_t usage,
+                         int pressed, hidpad_profile_t profile)
+{
+    if (!pressed || !out) {
+        return;
+    }
+    if (usage >= 1 && usage <= 32) {
+        out->raw_buttons |= 1u << (usage - 1u);
+    }
+    if (profile == HIDPAD_PROFILE_Q36) {
+        switch (usage) {
+        case 1: out->buttons |= BTN_A; break;
+        case 2: out->buttons |= BTN_B; break;
+        case 4: out->buttons |= BTN_X; break;
+        case 5: out->buttons |= BTN_Y; break;
+        case 7: out->buttons |= BTN_LB; break;
+        case 8: out->buttons |= BTN_RB; break;
+        case 9: out->lt = 65535; break;
+        case 10: out->rt = 65535; break;
+        case 11: out->buttons |= BTN_VIEW; break;
+        case 12: out->buttons |= BTN_MENU; break;
+        case 13: out->buttons |= BTN_HOME; break;
+        case 14: out->buttons |= BTN_SHARE; break;
+        default: break;
+        }
+        return;
+    }
+    switch (usage) {
+    case 1: out->buttons |= BTN_A; break;
+    case 2: out->buttons |= BTN_B; break;
+    case 3: out->buttons |= BTN_X; break;
+    case 4: out->buttons |= BTN_Y; break;
+    case 5: out->buttons |= BTN_LB; break;
+    case 6: out->buttons |= BTN_RB; break;
+    case 9: out->buttons |= BTN_VIEW; break;
+    case 10: out->buttons |= BTN_MENU; break;
+    case 11: out->buttons |= BTN_LS; break;
+    case 12: out->buttons |= BTN_RS; break;
+    case 13: out->buttons |= BTN_HOME; break;
+    case 14: out->buttons |= BTN_SHARE; break;
+    default: break;
+    }
+}
+
+static void apply_consumer(hidpad_decoded_report_t *out, uint16_t usage, int pressed)
+{
+    if (!pressed || !out) return;
+    switch (usage) {
+    case 0x0040: out->buttons |= BTN_MENU; break;
+    case 0x00cd: out->buttons |= BTN_MEDIA; break;
+    case 0x00e2: out->buttons |= BTN_VOLUME_MUTE; break;
+    case 0x00e9: out->buttons |= BTN_VOLUME_UP; break;
+    case 0x00ea: out->buttons |= BTN_VOLUME_DOWN; break;
+    case 0x0223: out->buttons |= BTN_HOME; break;
+    case 0x0224: out->buttons |= BTN_VIEW; break;
+    default: break;
+    }
+}
+
+static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
+                      int32_t logical_min, int32_t logical_max)
+{
+    int32_t dir = -1;
+    if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
+        dir = raw - 1;
+    } else if (raw >= 0 && raw <= 7) {
+        dir = raw;
+    }
+    switch (dir) {
+    case 0: out->buttons |= BTN_UP; break;
+    case 1: out->buttons |= BTN_UP | BTN_RIGHT; break;
+    case 2: out->buttons |= BTN_RIGHT; break;
+    case 3: out->buttons |= BTN_DOWN | BTN_RIGHT; break;
+    case 4: out->buttons |= BTN_DOWN; break;
+    case 5: out->buttons |= BTN_DOWN | BTN_LEFT; break;
+    case 6: out->buttons |= BTN_LEFT; break;
+    case 7: out->buttons |= BTN_UP | BTN_LEFT; break;
+    default: break;
+    }
+}
+
+static void set_layout(hidpad_report_parser_t *parser, uint8_t report_id, uint16_t bits)
+{
+    uint8_t i;
+    hidpad_report_layout_t *layout;
+    for (i = 0; i < parser->layout_count; ++i) {
+        if (parser->layouts[i].report_id == report_id) {
+            layout = &parser->layouts[i];
+            layout->bits = bits;
+            layout->payload_bytes = (uint16_t)((bits + 7u) / 8u);
+            layout->total_bytes = (uint16_t)(layout->payload_bytes +
+                ((parser->has_report_id && report_id != 0) ? 1u : 0u));
+            return;
+        }
+    }
+    if (parser->layout_count >= HIDPAD_MAX_REPORT_LAYOUTS) return;
+    layout = &parser->layouts[parser->layout_count++];
+    layout->report_id = report_id;
+    layout->bits = bits;
+    layout->payload_bytes = (uint16_t)((bits + 7u) / 8u);
+    layout->total_bytes = (uint16_t)(layout->payload_bytes +
+        ((parser->has_report_id && report_id != 0) ? 1u : 0u));
+}
+
+void hidpad_parser_clear(hidpad_report_parser_t *parser)
+{
+    if (parser) zero_bytes(parser, sizeof(*parser));
+}
+
+int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, size_t len)
+{
+    global_state_t *global = &s_parse_work.global;
+    local_state_t *local = &s_parse_work.local;
+    global_state_t *stack = s_parse_work.stack;
+    uint8_t stack_depth = 0;
+    uint16_t *offsets = s_parse_work.offsets;
+    uint8_t *offset_ids = s_parse_work.offset_ids;
+    uint8_t offset_count = 0;
+    size_t index = 0;
+    uint8_t i;
+    if (!parser || !data || len == 0) return 0;
+    hidpad_parser_clear(parser);
+    zero_bytes(&s_parse_work, sizeof(s_parse_work));
+    global->logical_max = 1;
+
+    while (index < len) {
+        uint8_t prefix = data[index++];
+        uint8_t size_code;
+        uint8_t item_size;
+        uint8_t item_type;
+        uint8_t item_tag;
+        uint32_t unsigned_value = 0;
+        int32_t signed_value;
+        uint8_t b;
+        if (prefix == 0xfe) {
+            uint8_t long_size;
+            if (index + 1 >= len) break;
+            long_size = data[index];
+            index += 2u + long_size;
+            continue;
+        }
+        size_code = prefix & 3u;
+        item_size = size_code == 3u ? 4u : size_code;
+        item_type = (prefix >> 2u) & 3u;
+        item_tag = (prefix >> 4u) & 15u;
+        if (index + item_size > len) break;
+        for (b = 0; b < item_size; ++b) {
+            unsigned_value |= (uint32_t)data[index + b] << (8u * b);
+        }
+        signed_value = sign_extend(unsigned_value, item_size);
+        index += item_size;
+
+        if (item_type == 1u) {
+            switch (item_tag) {
+            case 0: global->usage_page = (uint16_t)unsigned_value; break;
+            case 1: global->logical_min = signed_value; break;
+            case 2: global->logical_max = signed_value; break;
+            case 7: global->report_size = (uint8_t)unsigned_value; break;
+            case 8: global->report_id = (uint8_t)unsigned_value; parser->has_report_id = 1; break;
+            case 9: global->report_count = (uint8_t)unsigned_value; break;
+            case 10: if (stack_depth < 4) stack[stack_depth++] = *global; break;
+            case 11: if (stack_depth > 0) *global = stack[--stack_depth]; break;
+            default: break;
+            }
+        } else if (item_type == 2u) {
+            if (item_tag == 0u && local->usage_count < 24) {
+                local->usages[local->usage_count++] = unsigned_value;
+            } else if (item_tag == 1u) {
+                local->usage_min = unsigned_value;
+                local->has_usage_min = 1;
+            } else if (item_tag == 2u) {
+                local->usage_max = unsigned_value;
+                local->has_usage_max = 1;
+            }
+        } else if (item_type == 0u) {
+            if (item_tag == 8u) {
+                uint16_t *offset = NULL;
+                uint16_t start_offset;
+                uint16_t bit_len;
+                uint8_t field_index;
+                int is_constant = (unsigned_value & 1u) != 0;
+                int is_variable = (unsigned_value & 2u) != 0;
+                for (i = 0; i < offset_count; ++i) {
+                    if (offset_ids[i] == global->report_id) offset = &offsets[i];
+                }
+                if (!offset && offset_count < HIDPAD_MAX_REPORT_LAYOUTS) {
+                    offset_ids[offset_count] = global->report_id;
+                    offset = &offsets[offset_count++];
+                }
+                start_offset = offset ? *offset : 0;
+                bit_len = (uint16_t)global->report_size * global->report_count;
+                if (!is_constant && global->report_size > 0 && global->report_count > 0) {
+                    for (field_index = 0; field_index < global->report_count; ++field_index) {
+                        uint32_t raw_usage = 0;
+                        hidpad_report_field_t *field;
+                        if (parser->field_count >= HIDPAD_MAX_REPORT_FIELDS) break;
+                        if (field_index < local->usage_count) raw_usage = local->usages[field_index];
+                        else if (local->has_usage_min) raw_usage = local->usage_min + field_index;
+                        field = &parser->fields[parser->field_count++];
+                        field->report_id = global->report_id;
+                        field->offset_bits = (uint16_t)(start_offset + field_index * global->report_size);
+                        field->size_bits = global->report_size;
+                        field->logical_min = global->logical_min;
+                        field->logical_max = global->logical_max;
+                        field->variable = is_variable ? 1 : 0;
+                        field->usage_min = (uint16_t)local->usage_min;
+                        field->usage_max = (uint16_t)local->usage_max;
+                        split_usage(raw_usage, global->usage_page, &field->usage_page, &field->usage);
+                    }
+                }
+                if (offset) *offset = (uint16_t)(start_offset + bit_len);
+                zero_bytes(local, sizeof(*local));
+            } else if (item_tag == 10u || item_tag == 11u) {
+                zero_bytes(local, sizeof(*local));
+            }
+        }
+    }
+    for (i = 0; i < offset_count; ++i) set_layout(parser, offset_ids[i], offsets[i]);
+    return parser->field_count > 0;
+}
+
+static void infer_report(const hidpad_report_parser_t *parser, const uint8_t *data,
+                         size_t len, uint8_t *report_id, uint16_t *base_bits)
+{
+    uint8_t i;
+    *report_id = 0;
+    *base_bits = 0;
+    if (!parser->has_report_id || !data || len == 0) return;
+    for (i = 0; i < parser->layout_count; ++i) {
+        if (parser->layouts[i].report_id == data[0] && parser->layouts[i].total_bytes == len) {
+            *report_id = data[0];
+            *base_bits = 8;
+            return;
+        }
+    }
+    for (i = 0; i < parser->layout_count; ++i) {
+        if (parser->layouts[i].report_id != 0 && parser->layouts[i].payload_bytes == len) {
+            *report_id = parser->layouts[i].report_id;
+            return;
+        }
+    }
+}
+
+int hidpad_parser_decode(const hidpad_report_parser_t *parser,
+                         uint8_t report_id,
+                         const uint8_t *data,
+                         size_t len,
+                         hidpad_profile_t profile,
+                         hidpad_decoded_report_t *out)
+{
+    uint16_t i;
+    uint8_t selected_id = report_id;
+    uint16_t base_bits = 0;
+    int matched = 0;
+    int has_rx = 0;
+    int has_ry = 0;
+    if (!parser || !data || len == 0 || !out) return 0;
+    zero_bytes(out, sizeof(*out));
+    if (selected_id == 0) infer_report(parser, data, len, &selected_id, &base_bits);
+    out->report_id = selected_id;
+    for (i = 0; i < parser->field_count; ++i) {
+        const hidpad_report_field_t *field = &parser->fields[i];
+        if (field->report_id != 0 && field->report_id != selected_id) continue;
+        if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RX) has_rx = 1;
+        if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RY) has_ry = 1;
+    }
+    for (i = 0; i < parser->field_count; ++i) {
+        const hidpad_report_field_t *field = &parser->fields[i];
+        int32_t raw;
+        if (field->report_id != 0 && field->report_id != selected_id) continue;
+        if (!read_bits(data, len, (uint16_t)(base_bits + field->offset_bits),
+                       field->size_bits, field->logical_min < 0, &raw)) continue;
+        matched = 1;
+        if (field->usage_page == USAGE_PAGE_BUTTON) {
+            apply_button(out, field->variable ? field->usage : (uint16_t)raw,
+                         raw != 0, profile);
+        } else if (field->usage_page == USAGE_PAGE_CONSUMER) {
+            apply_consumer(out, field->variable ? field->usage : (uint16_t)raw, raw != 0);
+        } else if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP) {
+            switch (field->usage) {
+            case USAGE_X: out->lx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
+            case USAGE_Y: out->ly = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
+            case USAGE_Z:
+                if (has_rx) out->lt = normalize_trigger(raw, field->logical_min, field->logical_max);
+                else out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0);
+                break;
+            case USAGE_RX: out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
+            case USAGE_RY: out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
+            case USAGE_RZ:
+                if (has_ry) out->rt = normalize_trigger(raw, field->logical_min, field->logical_max);
+                else out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1);
+                break;
+            case USAGE_HAT: apply_hat(out, raw, field->logical_min, field->logical_max); break;
+            default: break;
+            }
+        }
+    }
+    return matched;
+}

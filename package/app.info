@@ -1,0 +1,6 @@
+name = HID Pad
+entry = main.lua
+kind = service
+allow_webui = true
+autostart_service = true
+description = Xbox and Android BLE HID controller service with calibration and mapping
