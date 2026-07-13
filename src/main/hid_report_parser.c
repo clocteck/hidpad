@@ -105,19 +105,34 @@ static void split_usage(uint32_t raw, uint16_t default_page, uint16_t *page, uin
 static int read_bits(const uint8_t *data, size_t len, uint16_t offset,
                      uint8_t size, int is_signed, int32_t *out)
 {
-    uint8_t bit;
+    size_t byte_offset;
+    uint8_t shift;
+    uint8_t byte_count;
+    uint8_t index;
     uint32_t value = 0;
+    uint32_t mask;
     if (!data || !out || size == 0 || size > 31 || (size_t)offset + size > len * 8u) {
         return 0;
     }
-    for (bit = 0; bit < size; ++bit) {
-        size_t source = (size_t)offset + bit;
-        if ((data[source / 8u] & (1u << (source % 8u))) != 0) {
-            value |= 1u << bit;
+    byte_offset = offset / 8u;
+    shift = (uint8_t)(offset % 8u);
+    byte_count = (uint8_t)((shift + size + 7u) / 8u);
+    if (byte_count <= 4u) {
+        for (index = 0; index < byte_count; ++index) {
+            value |= (uint32_t)data[byte_offset + index] << (index * 8u);
+        }
+        value >>= shift;
+    } else {
+        uint8_t bit;
+        for (bit = 0; bit < size; ++bit) {
+            size_t source = (size_t)offset + bit;
+            if ((data[source / 8u] & (1u << (source % 8u))) != 0) value |= 1u << bit;
         }
     }
+    mask = (1u << size) - 1u;
+    value &= mask;
     if (is_signed && (value & (1u << (size - 1u))) != 0) {
-        value -= 1u << size;
+        value |= ~mask;
     }
     *out = (int32_t)value;
     return 1;
@@ -171,8 +186,8 @@ static void apply_button(hidpad_decoded_report_t *out, uint16_t usage,
         case 5: out->buttons |= BTN_Y; break;
         case 7: out->buttons |= BTN_LB; break;
         case 8: out->buttons |= BTN_RB; break;
-        case 9: out->lt = 65535; break;
-        case 10: out->rt = 65535; break;
+        case 9: out->valid_mask |= HIDPAD_VALID_LT; out->lt = 65535; break;
+        case 10: out->valid_mask |= HIDPAD_VALID_RT; out->rt = 65535; break;
         case 11: out->buttons |= BTN_VIEW; break;
         case 12: out->buttons |= BTN_MENU; break;
         case 13: out->buttons |= BTN_HOME; break;
@@ -202,22 +217,34 @@ static void apply_consumer(hidpad_decoded_report_t *out, uint16_t usage, int pre
 {
     if (!pressed || !out) return;
     switch (usage) {
-    case 0x0040: out->buttons |= BTN_MENU; break;
-    case 0x00cd: out->buttons |= BTN_MEDIA; break;
-    case 0x00e2: out->buttons |= BTN_VOLUME_MUTE; break;
-    case 0x00e9: out->buttons |= BTN_VOLUME_UP; break;
-    case 0x00ea: out->buttons |= BTN_VOLUME_DOWN; break;
-    case 0x0223: out->buttons |= BTN_HOME; break;
-    case 0x0224: out->buttons |= BTN_VIEW; break;
+    case 0x0040: out->consumer_buttons |= BTN_MENU; break;
+    case 0x00cd: out->consumer_buttons |= BTN_MEDIA; break;
+    case 0x00e2: out->consumer_buttons |= BTN_VOLUME_MUTE; break;
+    case 0x00e9: out->consumer_buttons |= BTN_VOLUME_UP; break;
+    case 0x00ea: out->consumer_buttons |= BTN_VOLUME_DOWN; break;
+    case 0x0223: out->consumer_buttons |= BTN_HOME; break;
+    case 0x0224: out->consumer_buttons |= BTN_VIEW; break;
     default: break;
     }
 }
 
+static int field_is_relevant(uint16_t usage_page, uint16_t usage)
+{
+    if (usage_page == USAGE_PAGE_BUTTON || usage_page == USAGE_PAGE_CONSUMER) return 1;
+    if (usage_page != USAGE_PAGE_GENERIC_DESKTOP) return 0;
+    return usage == USAGE_X || usage == USAGE_Y || usage == USAGE_Z ||
+           usage == USAGE_RX || usage == USAGE_RY || usage == USAGE_RZ || usage == USAGE_HAT;
+}
+
 static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
-                      int32_t logical_min, int32_t logical_max)
+                      int32_t logical_min, int32_t logical_max,
+                      hidpad_profile_t profile)
 {
     int32_t dir = -1;
-    if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
+    if (profile == HIDPAD_PROFILE_Q36) {
+        /* Q36-compatible 0x1812 pads use 0 as neutral and 1..8 as directions. */
+        if (raw >= 1 && raw <= 8) dir = raw - 1;
+    } else if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
         dir = raw - 1;
     } else if (raw >= 0 && raw <= 7) {
         dir = raw;
@@ -348,10 +375,14 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
                 if (!is_constant && global->report_size > 0 && global->report_count > 0) {
                     for (field_index = 0; field_index < global->report_count; ++field_index) {
                         uint32_t raw_usage = 0;
+                        uint16_t usage_page;
+                        uint16_t usage;
                         hidpad_report_field_t *field;
-                        if (parser->field_count >= HIDPAD_MAX_REPORT_FIELDS) break;
                         if (field_index < local->usage_count) raw_usage = local->usages[field_index];
                         else if (local->has_usage_min) raw_usage = local->usage_min + field_index;
+                        split_usage(raw_usage, global->usage_page, &usage_page, &usage);
+                        if (!field_is_relevant(usage_page, usage)) continue;
+                        if (parser->field_count >= HIDPAD_MAX_REPORT_FIELDS) break;
                         field = &parser->fields[parser->field_count++];
                         field->report_id = global->report_id;
                         field->offset_bits = (uint16_t)(start_offset + field_index * global->report_size);
@@ -359,9 +390,8 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
                         field->logical_min = global->logical_min;
                         field->logical_max = global->logical_max;
                         field->variable = is_variable ? 1 : 0;
-                        field->usage_min = (uint16_t)local->usage_min;
-                        field->usage_max = (uint16_t)local->usage_max;
-                        split_usage(raw_usage, global->usage_page, &field->usage_page, &field->usage);
+                        field->usage_page = usage_page;
+                        field->usage = usage;
                     }
                 }
                 if (offset) *offset = (uint16_t)(start_offset + bit_len);
@@ -372,7 +402,45 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
         }
     }
     for (i = 0; i < offset_count; ++i) set_layout(parser, offset_ids[i], offsets[i]);
+    for (i = 0; i < parser->field_count; ++i) {
+        uint16_t j;
+        uint16_t lowest = i;
+        for (j = (uint16_t)(i + 1u); j < parser->field_count; ++j) {
+            if (parser->fields[j].report_id < parser->fields[lowest].report_id) lowest = j;
+        }
+        if (lowest != i) {
+            hidpad_report_field_t swap = parser->fields[i];
+            parser->fields[i] = parser->fields[lowest];
+            parser->fields[lowest] = swap;
+        }
+    }
+    for (i = 0; i < parser->layout_count; ++i) {
+        hidpad_report_layout_t *layout = &parser->layouts[i];
+        uint16_t field_index;
+        layout->first_field = parser->field_count;
+        layout->field_count = 0;
+        layout->has_rx = 0;
+        layout->has_ry = 0;
+        for (field_index = 0; field_index < parser->field_count; ++field_index) {
+            hidpad_report_field_t *field = &parser->fields[field_index];
+            if (field->report_id != layout->report_id) continue;
+            if (layout->field_count == 0) layout->first_field = field_index;
+            layout->field_count++;
+            if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RX) layout->has_rx = 1;
+            if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RY) layout->has_ry = 1;
+        }
+    }
     return parser->field_count > 0;
+}
+
+static const hidpad_report_layout_t *find_layout(const hidpad_report_parser_t *parser,
+                                                  uint8_t report_id)
+{
+    uint8_t i;
+    for (i = 0; i < parser->layout_count; ++i) {
+        if (parser->layouts[i].report_id == report_id) return &parser->layouts[i];
+    }
+    return NULL;
 }
 
 static void infer_report(const hidpad_report_parser_t *parser, const uint8_t *data,
@@ -407,20 +475,26 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
     uint16_t i;
     uint8_t selected_id = report_id;
     uint16_t base_bits = 0;
+    uint16_t first_field = 0;
+    uint16_t field_end;
     int matched = 0;
     int has_rx = 0;
     int has_ry = 0;
+    const hidpad_report_layout_t *layout;
     if (!parser || !data || len == 0 || !out) return 0;
     zero_bytes(out, sizeof(*out));
     if (selected_id == 0) infer_report(parser, data, len, &selected_id, &base_bits);
     out->report_id = selected_id;
-    for (i = 0; i < parser->field_count; ++i) {
-        const hidpad_report_field_t *field = &parser->fields[i];
-        if (field->report_id != 0 && field->report_id != selected_id) continue;
-        if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RX) has_rx = 1;
-        if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP && field->usage == USAGE_RY) has_ry = 1;
+    layout = find_layout(parser, selected_id);
+    if (layout && layout->field_count > 0) {
+        first_field = layout->first_field;
+        field_end = (uint16_t)(layout->first_field + layout->field_count);
+        has_rx = layout->has_rx;
+        has_ry = layout->has_ry;
+    } else {
+        field_end = parser->field_count;
     }
-    for (i = 0; i < parser->field_count; ++i) {
+    for (i = first_field; i < field_end; ++i) {
         const hidpad_report_field_t *field = &parser->fields[i];
         int32_t raw;
         if (field->report_id != 0 && field->report_id != selected_id) continue;
@@ -428,25 +502,27 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
                        field->size_bits, field->logical_min < 0, &raw)) continue;
         matched = 1;
         if (field->usage_page == USAGE_PAGE_BUTTON) {
+            out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS;
             apply_button(out, field->variable ? field->usage : (uint16_t)raw,
                          raw != 0, profile);
         } else if (field->usage_page == USAGE_PAGE_CONSUMER) {
+            out->valid_mask |= HIDPAD_VALID_CONSUMER_BUTTONS;
             apply_consumer(out, field->variable ? field->usage : (uint16_t)raw, raw != 0);
         } else if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP) {
             switch (field->usage) {
-            case USAGE_X: out->lx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
-            case USAGE_Y: out->ly = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
+            case USAGE_X: out->valid_mask |= HIDPAD_VALID_LX; out->lx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
+            case USAGE_Y: out->valid_mask |= HIDPAD_VALID_LY; out->ly = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
             case USAGE_Z:
-                if (has_rx) out->lt = normalize_trigger(raw, field->logical_min, field->logical_max);
-                else out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0);
+                if (has_rx) { out->valid_mask |= HIDPAD_VALID_LT; out->lt = normalize_trigger(raw, field->logical_min, field->logical_max); }
+                else { out->valid_mask |= HIDPAD_VALID_RX; out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0); }
                 break;
-            case USAGE_RX: out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
-            case USAGE_RY: out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
+            case USAGE_RX: out->valid_mask |= HIDPAD_VALID_RX; out->rx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
+            case USAGE_RY: out->valid_mask |= HIDPAD_VALID_RY; out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); break;
             case USAGE_RZ:
-                if (has_ry) out->rt = normalize_trigger(raw, field->logical_min, field->logical_max);
-                else out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1);
+                if (has_ry) { out->valid_mask |= HIDPAD_VALID_RT; out->rt = normalize_trigger(raw, field->logical_min, field->logical_max); }
+                else { out->valid_mask |= HIDPAD_VALID_RY; out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); }
                 break;
-            case USAGE_HAT: apply_hat(out, raw, field->logical_min, field->logical_max); break;
+            case USAGE_HAT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; apply_hat(out, raw, field->logical_min, field->logical_max, profile); break;
             default: break;
             }
         }

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>HID Pad 使用说明</title>
+<style>
+:root{
+  --bg:#f5f8fc;
+  --surface:#fff;
+  --soft:#eef5ff;
+  --line:#dce6f1;
+  --text:#182332;
+  --muted:#68798c;
+  --blue:#3377d5;
+  --green:#247a59;
+  --green-soft:#eaf7f0;
+  --orange:#9d6019;
+  --orange-soft:#fff3e2;
+  --shadow:0 18px 48px rgba(39,70,112,.08);
+  --radius:18px;
+}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{
+  margin:0;
+  color:var(--text);
+  background:
+    radial-gradient(circle at top left,rgba(51,119,213,.12),transparent 30%),
+    radial-gradient(circle at top right,rgba(57,156,112,.08),transparent 26%),
+    linear-gradient(180deg,#fcfdff,var(--bg));
+  font:15px/1.65 "Segoe UI Variable","Aptos","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+a{color:#2f67b7;text-decoration:none}
+a:hover{text-decoration:underline}
+code{
+  padding:2px 7px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#f6f9fc;
+  color:#315f98;
+  font-family:"Cascadia Code","Consolas",monospace;
+  word-break:break-all;
+}
+.shell{width:min(920px,calc(100% - 24px));margin:0 auto;padding:22px 0 30px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:14px}
+.brand{display:flex;align-items:center;gap:13px;min-width:0}
+.icon{
+  width:56px;height:56px;position:relative;flex:0 0 auto;
+  border:1px solid rgba(51,119,213,.2);border-radius:17px;
+  background:linear-gradient(145deg,#fff,var(--soft));box-shadow:var(--shadow)
+}
+.icon:before{
+  content:"";position:absolute;left:10px;right:10px;top:18px;height:23px;
+  border:3px solid var(--blue);border-radius:10px 10px 14px 14px;transform:rotate(-3deg)
+}
+.icon:after{
+  content:"+  •";position:absolute;left:16px;top:17px;color:var(--blue);
+  font-size:15px;font-weight:900;letter-spacing:7px;white-space:pre
+}
+.brand h1{margin:0;font-size:clamp(27px,4vw,35px);line-height:1.05}
+.brand p{margin:5px 0 0;color:var(--muted)}
+.version{
+  flex:0 0 auto;padding:8px 12px;border:1px solid #cfe6d9;border-radius:999px;
+  background:var(--green-soft);color:var(--green);font-weight:800
+}
+.card{border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,255,255,.95);box-shadow:var(--shadow)}
+.hero{padding:20px}
+.hero h2{margin:0 0 7px;font-size:22px}
+.hero p{margin:0;color:var(--muted)}
+.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}
+.pill{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:#fff;font-weight:750}
+.pill.fast{border-color:#cfe6d9;background:var(--green-soft);color:var(--green)}
+.primary-link{
+  display:inline-flex;align-items:center;min-height:42px;margin-top:16px;padding:0 15px;
+  border-radius:11px;background:var(--blue);color:#fff;font-weight:800
+}
+.primary-link:hover{text-decoration:none;filter:brightness(.96)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.section{padding:18px}
+.section.wide{grid-column:1/-1}
+.section-title{margin:0 0 13px}
+.section-title small{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+.section-title strong{display:block;margin-top:3px;font-size:20px;line-height:1.2}
+.steps{display:grid;gap:10px;counter-reset:step}
+.step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:10px;align-items:start}
+.step:before{
+  counter-increment:step;content:counter(step);display:grid;place-items:center;width:30px;height:30px;
+  border-radius:10px;background:var(--soft);color:var(--blue);font-weight:900
+}
+.step strong{display:block;margin-bottom:2px}
+.step span{color:var(--muted)}
+ul{margin:0;padding-left:19px;color:var(--muted)}
+li{margin:7px 0}
+.fact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.fact{padding:12px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fff,#f7fafe)}
+.fact span{display:block;color:var(--muted);font-size:12px;font-weight:750}
+.fact strong{display:block;margin-top:5px;font-size:17px}
+.note{margin-top:12px;padding:12px 13px;border-radius:13px;background:var(--orange-soft);color:var(--orange)}
+.mapping{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px}
+.mapping div{display:grid;grid-template-columns:105px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mapping span{color:var(--muted)}
+.footer{margin-top:14px;padding:3px 4px;text-align:center;color:#8290a0;font-size:12px}
+@media(max-width:720px){
+  .topbar{align-items:flex-start}.version{margin-top:5px}.grid{grid-template-columns:1fr}
+  .section.wide{grid-column:auto}.fact-grid,.mapping{grid-template-columns:1fr}.mapping div{grid-template-columns:96px 1fr}
+}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="icon" aria-hidden="true"></div>
+      <div>
+        <h1>HID Pad</h1>
+        <p>BLE 手柄连接、校准与按键映射服务</p>
+      </div>
+    </div>
+    <span class="version">v0.0.2</span>
+  </header>
+
+  <section class="card hero">
+    <h2>让一个 BLE 手柄供多个应用使用</h2>
+    <p>服务独占管理 BLE 连接，将标准化后的按键、摇杆和扳机状态发布到系统 <code>controller</code> 总线。Retro-Go 等应用无需再次连接手柄。</p>
+    <div class="pills">
+      <span class="pill">Xbox BLE</span>
+      <span class="pill">Android HID</span>
+      <span class="pill">ShanWan Q36</span>
+      <span class="pill fast">10ms 服务轮询</span>
+    </div>
+    <a class="primary-link" href="/hidpad">打开手柄控制页</a>
+  </section>
+
+  <div class="grid">
+    <section class="card section wide">
+      <h2 class="section-title"><small>Quick start</small><strong>首次连接</strong></h2>
+      <div class="steps">
+        <div class="step"><div><strong>让手柄进入配对模式</strong><span>长按手柄配对键，确认指示灯快速闪烁。已经连接手机或电脑时，请先从原设备断开。</span></div></div>
+        <div class="step"><div><strong>打开控制页并扫描</strong><span>进入 <code>/hidpad</code>，点击“扫描手柄”，等待设备名称和信号强度出现在列表中。</span></div></div>
+        <div class="step"><div><strong>选择设备并连接</strong><span>选择目标手柄，点击“连接并配对”。状态变成“已连接”后，按键和摇杆应在实时状态区域响应。</span></div></div>
+        <div class="step"><div><strong>启动使用手柄的应用</strong><span>保持 HID Pad 服务运行，再打开 Retro-Go 等消费者应用。输入源名称为 <code>ble-main</code>。</span></div></div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2 class="section-title"><small>Calibration</small><strong>摇杆与扳机校准</strong></h2>
+      <ul>
+        <li>先连接手柄，并让两个摇杆保持在中心位置。</li>
+        <li>点击“开始采样”，再把两个摇杆分别转满一圈。</li>
+        <li>将 LT、RT 扳机各按到底并松开。</li>
+        <li>点击“保存校准”，再按需要调整中心死区。</li>
+      </ul>
+      <div class="note">漂移时适当增大死区；不要在摇杆偏离中心时开始采样。</div>
+    </section>
+
+    <section class="card section">
+      <h2 class="section-title"><small>Mapping</small><strong>按键映射</strong></h2>
+      <ul>
+        <li>控制页左侧名称是应用最终收到的目标键。</li>
+        <li>右侧选择手柄原始键，可交换 A/B、X/Y 或肩键。</li>
+        <li>选择“不映射”可屏蔽某个目标键。</li>
+        <li>修改完成后点击“保存映射”。</li>
+      </ul>
+      <div class="note">恢复默认会同时重置映射、死区和校准数据。</div>
+    </section>
+
+    <section class="card section wide">
+      <h2 class="section-title"><small>Input</small><strong>默认输出约定</strong></h2>
+      <div class="mapping">
+        <div><strong>方向</strong><span>D-pad 与左摇杆</span></div>
+        <div><strong>A / B / X / Y</strong><span>同名标准游戏按键</span></div>
+        <div><strong>L / R</strong><span>LB / RB 或 L1 / R1</span></div>
+        <div><strong>SELECT</strong><span>View / Select</span></div>
+        <div><strong>START</strong><span>Menu / Start</span></div>
+        <div><strong>HOME</strong><span>Guide / Home</span></div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2 class="section-title"><small>Latency</small><strong>低延迟设置</strong></h2>
+      <div class="fact-grid">
+        <div class="fact"><span>服务轮询</span><strong>10ms</strong></div>
+        <div class="fact"><span>BLE 请求间隔</span><strong>15–30ms</strong></div>
+        <div class="fact"><span>Slave latency</span><strong>0</strong></div>
+      </div>
+      <p class="note">实际连接间隔由主机和手柄协商，某些手柄可能选择更保守的参数。</p>
+    </section>
+
+    <section class="card section">
+      <h2 class="section-title"><small>Troubleshooting</small><strong>连接问题排查</strong></h2>
+      <ul>
+        <li>扫描不到：重新进入配对模式，并让手柄靠近设备。</li>
+        <li>连接后无输入：断开后执行“重新配对当前”。</li>
+        <li>按键错位：恢复默认映射后重新配置。</li>
+        <li>摇杆漂移：重新校准并适当增加中心死区。</li>
+      </ul>
+    </section>
+  </div>
+
+  <footer class="footer">
+    <a href="https://github.com/clocteck/hidpad" target="_blank" rel="noreferrer noopener">github.com/clocteck/hidpad</a>
+    · 服务 App v0.0.2
+  </footer>
+</main>
+</body>
+</html>

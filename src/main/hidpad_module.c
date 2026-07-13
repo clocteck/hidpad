@@ -4,14 +4,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "0.3.0"
+#define HIDPAD_VERSION "0.4.0"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 8
 #define HIDPAD_EVENT_BUDGET 64
+#define HIDPAD_REPORT_CACHE_SIZE 32
+#define HIDPAD_KEEPALIVE_MS 15000u
+#define HIDPAD_KEEPALIVE_RETRY_MS 3000u
+#define HIDPAD_RESCAN_MIN_MS 1000u
+#define HIDPAD_RESCAN_MAX_MS 30000u
+#define HIDPAD_CONN_INTERVAL_MIN 12u
+#define HIDPAD_CONN_INTERVAL_MAX 24u
+#define HIDPAD_CONN_LATENCY 0u
+#define HIDPAD_CONN_SUPERVISION_TIMEOUT 500u
 
 #define UUID_HID 0x1812u
 #define UUID_REPORT_MAP 0x2a4bu
+#define UUID_HID_CONTROL_POINT 0x2a4cu
 #define UUID_REPORT 0x2a4du
 #define UUID_CCCD 0x2902u
 #define UUID_REPORT_REFERENCE 0x2908u
@@ -32,13 +42,12 @@
 #define BTN_MENU (1u << 13)
 #define BTN_SHARE (1u << 14)
 #define BTN_HOME (1u << 15)
-#define CONSUMER_MASK 0x000f0000u
-
 typedef enum driver_phase_t {
     PHASE_STOPPED = 0,
     PHASE_SCANNING,
     PHASE_SELECT_DEVICE,
     PHASE_CONNECTING,
+    PHASE_PAIRING,
     PHASE_DISCOVER_SERVICES,
     PHASE_DISCOVER_CHARACTERISTICS,
     PHASE_DISCOVER_DESCRIPTORS,
@@ -61,6 +70,7 @@ typedef enum pending_read_t {
     PENDING_READ_MAP,
     PENDING_READ_REFERENCE,
     PENDING_READ_INPUT,
+    PENDING_READ_KEEPALIVE,
 } pending_read_t;
 
 typedef struct report_characteristic_t {
@@ -70,6 +80,14 @@ typedef struct report_characteristic_t {
     uint16_t reference_handle;
     uint8_t report_id;
     uint8_t report_type;
+    uint8_t subscribed;
+    uint8_t last_report_len;
+    uint8_t last_report_valid;
+    uint8_t last_decode_ok;
+    uint32_t game_buttons;
+    uint32_t consumer_buttons;
+    uint32_t raw_buttons;
+    uint8_t last_report[HIDPAD_REPORT_CACHE_SIZE];
 } report_characteristic_t;
 
 typedef struct driver_state_t {
@@ -87,6 +105,7 @@ typedef struct driver_state_t {
     uint8_t connected;
     uint8_t connecting;
     uint8_t encrypted;
+    uint16_t disconnect_reason;
     char address[18];
     char name[40];
     uint8_t raw_report[244];
@@ -120,14 +139,22 @@ typedef struct hidpad_instance_t {
     uint8_t manual_scan;
     uint8_t scan_result_count;
     uint8_t state_dirty;
+    uint8_t status_dirty;
     uint8_t pair_requested;
+    uint8_t peer_addr_type;
+    uint8_t forget_pending;
     uint32_t scan_ms;
+    uint32_t rescan_backoff_ms;
     uint32_t next_scan_ms;
     uint32_t next_input_poll_ms;
+    uint32_t next_keepalive_ms;
+    uint32_t keepalive_count;
     uint16_t conn_handle;
     uint16_t hid_start;
     uint16_t hid_end;
     uint16_t report_map_handle;
+    uint16_t control_point_handle;
+    uint8_t control_point_properties;
     report_characteristic_t reports[HIDPAD_MAX_REPORTS];
     uint8_t report_count;
     uint8_t reference_index;
@@ -141,7 +168,7 @@ typedef struct hidpad_instance_t {
     char preferred_address[18];
     discovered_device_t scan_results[HIDPAD_MAX_SCAN_RESULTS];
     driver_state_t state;
-    /* Reused PSRAM work buffers: keep BLE/HID temporaries off lua_update stack. */
+    /* Reused heap work buffers: internal RAM is preferred for the hot input path. */
     module_ble_event_t event_work;
     module_ble_config_t config_work;
     module_ble_scan_config_t scan_work;
@@ -292,6 +319,7 @@ static const char *phase_text(driver_phase_t phase)
     case PHASE_SCANNING: return "scanning";
     case PHASE_SELECT_DEVICE: return "select_device";
     case PHASE_CONNECTING: return "connecting";
+    case PHASE_PAIRING: return "pairing";
     case PHASE_DISCOVER_SERVICES: return "discover_services";
     case PHASE_DISCOVER_CHARACTERISTICS: return "discover_characteristics";
     case PHASE_DISCOVER_DESCRIPTORS: return "discover_descriptors";
@@ -319,12 +347,19 @@ static void mark_dirty(hidpad_instance_t *inst)
     inst->state_dirty = 1;
 }
 
+static void mark_status_dirty(hidpad_instance_t *inst)
+{
+    if (!inst) return;
+    inst->status_dirty = 1;
+    mark_dirty(inst);
+}
+
 static void set_error(hidpad_instance_t *inst, const char *error)
 {
     if (!inst) return;
     inst->last_error = error;
     inst->phase = PHASE_ERROR;
-    mark_dirty(inst);
+    mark_status_dirty(inst);
 }
 
 static void clear_controls(hidpad_instance_t *inst)
@@ -350,6 +385,9 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->hid_start = 0;
     inst->hid_end = 0;
     inst->report_map_handle = 0;
+    inst->control_point_handle = 0;
+    inst->control_point_properties = 0;
+    inst->next_keepalive_ms = 0;
     zero_bytes(inst->reports, sizeof(inst->reports));
     inst->report_count = 0;
     inst->reference_index = 0;
@@ -379,28 +417,100 @@ static void copy_raw_report(driver_state_t *state, const uint8_t *data, size_t l
     state->raw_report_len = (uint16_t)len;
 }
 
+static int bytes_equal(const uint8_t *left, const uint8_t *right, size_t len)
+{
+    size_t i;
+    if (!left || !right) return 0;
+    for (i = 0; i < len; ++i) {
+        if (left[i] != right[i]) return 0;
+    }
+    return 1;
+}
+
+static int report_is_duplicate(const report_characteristic_t *report,
+                               const uint8_t *data, size_t len)
+{
+    return report && report->last_report_valid && len <= HIDPAD_REPORT_CACHE_SIZE &&
+           report->last_report_len == len && bytes_equal(report->last_report, data, len);
+}
+
+static void remember_report(report_characteristic_t *report,
+                            const uint8_t *data, size_t len, int decoded)
+{
+    size_t i;
+    if (!report) return;
+    report->last_report_valid = 0;
+    report->last_decode_ok = decoded ? 1 : 0;
+    if (!data || len > HIDPAD_REPORT_CACHE_SIZE) return;
+    for (i = 0; i < len; ++i) report->last_report[i] = data[i];
+    report->last_report_len = (uint8_t)len;
+    report->last_report_valid = 1;
+}
+
 static void apply_decoded(hidpad_instance_t *inst,
+                          report_characteristic_t *report,
                           const hidpad_decoded_report_t *decoded,
                           const uint8_t *raw,
                           size_t raw_len)
 {
+    uint32_t old_buttons;
+    uint32_t old_raw_buttons;
+    int16_t old_lx;
+    int16_t old_ly;
+    int16_t old_rx;
+    int16_t old_ry;
+    uint16_t old_lt;
+    uint16_t old_rt;
+    uint8_t i;
     if (!inst || !decoded) return;
-    if ((decoded->buttons & CONSUMER_MASK) != 0 || decoded->report_id == 3) {
-        inst->consumer_buttons = decoded->buttons;
+    old_buttons = inst->state.buttons;
+    old_raw_buttons = inst->state.raw_buttons;
+    old_lx = inst->state.lx;
+    old_ly = inst->state.ly;
+    old_rx = inst->state.rx;
+    old_ry = inst->state.ry;
+    old_lt = inst->state.lt;
+    old_rt = inst->state.rt;
+    if (report) {
+        if ((decoded->valid_mask & HIDPAD_VALID_GAME_BUTTONS) != 0) {
+            report->game_buttons = decoded->buttons;
+            report->raw_buttons = decoded->raw_buttons;
+        }
+        if ((decoded->valid_mask & HIDPAD_VALID_CONSUMER_BUTTONS) != 0) {
+            report->consumer_buttons = decoded->consumer_buttons;
+        }
+        inst->game_buttons = 0;
+        inst->consumer_buttons = 0;
+        inst->state.raw_buttons = 0;
+        for (i = 0; i < inst->report_count; ++i) {
+            inst->game_buttons |= inst->reports[i].game_buttons;
+            inst->consumer_buttons |= inst->reports[i].consumer_buttons;
+            inst->state.raw_buttons |= inst->reports[i].raw_buttons;
+        }
     } else {
-        inst->game_buttons = decoded->buttons;
-        inst->state.raw_buttons = decoded->raw_buttons;
-        inst->state.lx = decoded->lx;
-        inst->state.ly = decoded->ly;
-        inst->state.rx = decoded->rx;
-        inst->state.ry = decoded->ry;
-        inst->state.lt = decoded->lt;
-        inst->state.rt = decoded->rt;
+        if ((decoded->valid_mask & HIDPAD_VALID_GAME_BUTTONS) != 0) {
+            inst->game_buttons = decoded->buttons;
+            inst->state.raw_buttons = decoded->raw_buttons;
+        }
+        if ((decoded->valid_mask & HIDPAD_VALID_CONSUMER_BUTTONS) != 0) {
+            inst->consumer_buttons = decoded->consumer_buttons;
+        }
     }
+    if ((decoded->valid_mask & HIDPAD_VALID_LX) != 0) inst->state.lx = decoded->lx;
+    if ((decoded->valid_mask & HIDPAD_VALID_LY) != 0) inst->state.ly = decoded->ly;
+    if ((decoded->valid_mask & HIDPAD_VALID_RX) != 0) inst->state.rx = decoded->rx;
+    if ((decoded->valid_mask & HIDPAD_VALID_RY) != 0) inst->state.ry = decoded->ry;
+    if ((decoded->valid_mask & HIDPAD_VALID_LT) != 0) inst->state.lt = decoded->lt;
+    if ((decoded->valid_mask & HIDPAD_VALID_RT) != 0) inst->state.rt = decoded->rt;
     inst->state.buttons = inst->game_buttons | inst->consumer_buttons;
     inst->state.report_id = decoded->report_id;
     copy_raw_report(&inst->state, raw, raw_len);
-    mark_dirty(inst);
+    if (old_buttons != inst->state.buttons || old_raw_buttons != inst->state.raw_buttons ||
+        old_lx != inst->state.lx || old_ly != inst->state.ly ||
+        old_rx != inst->state.rx || old_ry != inst->state.ry ||
+        old_lt != inst->state.lt || old_rt != inst->state.rt) {
+        mark_dirty(inst);
+    }
 }
 
 static uint16_t read_u16(const uint8_t *data)
@@ -408,15 +518,15 @@ static uint16_t read_u16(const uint8_t *data)
     return (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
 }
 
-static int decode_xbox(hidpad_instance_t *inst, const uint8_t *data, size_t len)
+static int decode_xbox(hidpad_decoded_report_t *decoded, const uint8_t *data, size_t len)
 {
-    hidpad_decoded_report_t *decoded;
     uint16_t lt_raw;
     uint16_t rt_raw;
     uint8_t dpad;
-    if (!inst || !data || len != 16) return 0;
-    decoded = &inst->decoded_work;
+    if (!decoded || !data || len != 16) return 0;
     zero_bytes(decoded, sizeof(*decoded));
+    decoded->valid_mask = HIDPAD_VALID_GAME_BUTTONS | HIDPAD_VALID_LX | HIDPAD_VALID_LY |
+                          HIDPAD_VALID_RX | HIDPAD_VALID_RY | HIDPAD_VALID_LT | HIDPAD_VALID_RT;
     decoded->lx = (int16_t)((int32_t)read_u16(data) - 32768);
     decoded->ly = (int16_t)(32767 - (int32_t)read_u16(data + 2));
     decoded->rx = (int16_t)((int32_t)read_u16(data + 4) - 32768);
@@ -444,7 +554,6 @@ static int decode_xbox(hidpad_instance_t *inst, const uint8_t *data, size_t len)
     if (data[14] & (1u << 5)) decoded->buttons |= BTN_LS;
     if (data[14] & (1u << 6)) decoded->buttons |= BTN_RS;
     if (data[15] & 1u) decoded->buttons |= BTN_SHARE;
-    apply_decoded(inst, decoded, data, len);
     return 1;
 }
 
@@ -454,17 +563,26 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
     hidpad_decoded_report_t *decoded;
     hidpad_profile_t profile;
     uint8_t report_id = report ? report->report_id : 0;
+    int decoded_ok;
     if (!inst || !data || len == 0) return 0;
-    if (inst->profile == DEVICE_PROFILE_XBOX && decode_xbox(inst, data, len)) return 1;
+    if (report_is_duplicate(report, data, len)) return report->last_decode_ok;
     decoded = &inst->decoded_work;
+    if (inst->profile == DEVICE_PROFILE_XBOX && decode_xbox(decoded, data, len)) {
+        decoded->report_id = report_id;
+        apply_decoded(inst, report, decoded, data, len);
+        remember_report(report, data, len, 1);
+        return 1;
+    }
     profile = inst->profile == DEVICE_PROFILE_Q36 ? HIDPAD_PROFILE_Q36 : HIDPAD_PROFILE_GENERIC;
-    if (!hidpad_parser_decode(&inst->parser, report_id, data, len, profile, decoded)) {
+    decoded_ok = hidpad_parser_decode(&inst->parser, report_id, data, len, profile, decoded);
+    if (!decoded_ok) {
         copy_raw_report(&inst->state, data, len);
         inst->state.report_id = report_id;
-        mark_dirty(inst);
+        remember_report(report, data, len, 0);
         return 0;
     }
-    apply_decoded(inst, decoded, data, len);
+    apply_decoded(inst, report, decoded, data, len);
+    remember_report(report, data, len, 1);
     return 1;
 }
 
@@ -505,18 +623,22 @@ static int score_advertisement(const advertisement_t *adv, device_profile_t *pro
         *profile = DEVICE_PROFILE_XBOX;
         return 240;
     }
-    if (text_contains(adv->name, "q36")) {
+    if (adv->has_hid || text_contains(adv->name, "q36") ||
+        text_contains(adv->name, "shanwan")) {
         *profile = DEVICE_PROFILE_Q36;
-        score += 100;
     } else {
         *profile = DEVICE_PROFILE_HID;
     }
+    if (text_contains(adv->name, "q36") || text_contains(adv->name, "shanwan")) score += 100;
     if (adv->has_hid) score += 100;
     if (adv->appearance == 0x03c4 || adv->appearance == 0x03c3) score += 80;
     if (text_contains(adv->name, "gamepad") || text_contains(adv->name, "controller") ||
         text_contains(adv->name, "joystick") || text_contains(adv->name, "8bitdo")) score += 45;
     return score;
 }
+
+static void schedule_rescan(hidpad_instance_t *inst, uint32_t delay_ms);
+static void schedule_rescan_with_backoff(hidpad_instance_t *inst);
 
 static int start_scan(hidpad_instance_t *inst)
 {
@@ -526,19 +648,18 @@ static int start_scan(hidpad_instance_t *inst)
     scan = &inst->scan_work;
     zero_bytes(scan, sizeof(*scan));
     scan->size = sizeof(*scan);
-    scan->duration_ms = inst->scan_ms;
-    scan->interval_us = 48000;
-    scan->window_us = 30000;
+    scan->duration_ms = inst->manual_scan || inst->scan_ms <= 3000u ? inst->scan_ms : 3000u;
+    scan->interval_us = inst->manual_scan ? 48000u : 160000u;
+    scan->window_us = inst->manual_scan ? 30000u : 20000u;
     scan->active = 1;
     err = inst->host->ble.gap_scan(inst->session, scan);
     if (err != MODULE_OK) {
-        inst->next_scan_ms = now_ms(inst) + 1500;
-        inst->phase = PHASE_WAIT_RESCAN;
+        schedule_rescan_with_backoff(inst);
         return 0;
     }
     inst->scan_active = 1;
     inst->phase = PHASE_SCANNING;
-    mark_dirty(inst);
+    mark_status_dirty(inst);
     return 1;
 }
 
@@ -548,7 +669,17 @@ static void schedule_rescan(hidpad_instance_t *inst, uint32_t delay_ms)
     inst->scan_active = 0;
     inst->next_scan_ms = now_ms(inst) + delay_ms;
     inst->phase = PHASE_WAIT_RESCAN;
-    mark_dirty(inst);
+    mark_status_dirty(inst);
+}
+
+static void schedule_rescan_with_backoff(hidpad_instance_t *inst)
+{
+    uint32_t next;
+    if (!inst) return;
+    schedule_rescan(inst, inst->rescan_backoff_ms);
+    if (inst->rescan_backoff_ms >= HIDPAD_RESCAN_MAX_MS) return;
+    next = inst->rescan_backoff_ms * 2u;
+    inst->rescan_backoff_ms = next > HIDPAD_RESCAN_MAX_MS ? HIDPAD_RESCAN_MAX_MS : next;
 }
 
 static int start_read(hidpad_instance_t *inst, uint16_t handle,
@@ -603,8 +734,15 @@ static void subscribe_next(hidpad_instance_t *inst)
         inst->subscribe_index++;
     }
     inst->phase = PHASE_READY;
+    if (inst->host->ble.gap_set_connection_params) {
+        (void)inst->host->ble.gap_set_connection_params(
+            inst->session, inst->conn_handle,
+            HIDPAD_CONN_INTERVAL_MIN, HIDPAD_CONN_INTERVAL_MAX,
+            HIDPAD_CONN_LATENCY, HIDPAD_CONN_SUPERVISION_TIMEOUT);
+    }
     inst->next_input_poll_ms = now_ms(inst) + 80;
-    mark_dirty(inst);
+    inst->next_keepalive_ms = now_ms(inst);
+    mark_status_dirty(inst);
 }
 
 static void begin_subscribe(hidpad_instance_t *inst)
@@ -669,18 +807,19 @@ static int connect_device(hidpad_instance_t *inst, const discovered_device_t *de
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     inst->scan_active = 0;
     inst->profile = (device_profile_t)device->profile;
+    inst->peer_addr_type = device->addr_type;
     copy_text(inst->state.address, sizeof(inst->state.address),
               device->address, strlen(device->address));
     copy_text(inst->state.name, sizeof(inst->state.name), device->name, strlen(device->name));
     inst->state.connecting = 1;
     inst->phase = PHASE_CONNECTING;
-    mark_dirty(inst);
+    mark_status_dirty(inst);
     err = inst->host->ble.gap_connect(inst->session, device->addr_type,
-                                     device->address, 10000);
+                                     device->address, 15000);
     if (err != MODULE_OK) {
         inst->state.connecting = 0;
         inst->phase = inst->manual_scan ? PHASE_SELECT_DEVICE : PHASE_WAIT_RESCAN;
-        mark_dirty(inst);
+        mark_status_dirty(inst);
         return 0;
     }
     inst->manual_scan = 0;
@@ -693,7 +832,18 @@ static void handle_scan_result(hidpad_instance_t *inst, const module_ble_event_t
     discovered_device_t *device;
     device_profile_t profile = DEVICE_PROFILE_HID;
     int score;
+    uint8_t i;
     if (!inst->scan_active || inst->state.connected || inst->state.connecting) return;
+    if (!inst->manual_scan && inst->preferred_address[0] &&
+        !text_equal(inst->preferred_address, event->address)) return;
+    for (i = 0; i < inst->scan_result_count; ++i) {
+        if (!text_equal(inst->scan_results[i].address, event->address)) continue;
+        inst->scan_results[i].rssi = event->rssi;
+        if (!inst->manual_scan && !connect_device(inst, &inst->scan_results[i])) {
+            schedule_rescan_with_backoff(inst);
+        }
+        return;
+    }
     adv = &inst->advertisement_work;
     parse_advertisement(event->data, event->data_len, adv);
     score = score_advertisement(adv, &profile);
@@ -702,35 +852,91 @@ static void handle_scan_result(hidpad_instance_t *inst, const module_ble_event_t
     if (!device || inst->manual_scan) return;
     if (inst->preferred_address[0] &&
         !text_equal(inst->preferred_address, device->address)) return;
-    if (!connect_device(inst, device)) schedule_rescan(inst, 1200);
+    if (!connect_device(inst, device)) schedule_rescan_with_backoff(inst);
+}
+
+static void start_hid_service_discovery(hidpad_instance_t *inst)
+{
+    if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) return;
+    inst->last_error = NULL;
+    inst->state.disconnect_reason = 0;
+    inst->phase = PHASE_DISCOVER_SERVICES;
+    mark_status_dirty(inst);
+    if (inst->host->ble.gattc_discover_services(
+            inst->session, inst->conn_handle, "1812") != MODULE_OK) {
+        set_error(inst, "HID service discovery failed");
+        inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+    }
 }
 
 static void handle_connected(hidpad_instance_t *inst, const module_ble_event_t *event)
 {
-    inst->last_error = NULL;
     inst->conn_handle = event->conn_handle;
     inst->state.connected = 1;
     inst->state.connecting = 0;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->pair_requested = 1;
     reset_gatt(inst);
-    inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1);
-    inst->host->ble.gattc_exchange_mtu(inst->session, inst->conn_handle);
-    inst->phase = PHASE_DISCOVER_SERVICES;
-    mark_dirty(inst);
-    if (inst->host->ble.gattc_discover_services(inst->session, inst->conn_handle, "1812") != MODULE_OK) {
-        set_error(inst, "HID service discovery failed");
+    inst->phase = PHASE_PAIRING;
+    mark_status_dirty(inst);
+    if (inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK) {
+        set_error(inst, "BLE pairing request failed");
+        inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
     }
 }
 
-static void handle_disconnected(hidpad_instance_t *inst)
+static uint16_t normalized_disconnect_reason(uint16_t reason)
 {
+    return reason >= 0x0200u && reason <= 0x02ffu ? (uint16_t)(reason - 0x0200u) : reason;
+}
+
+static const char *pairing_disconnect_error(uint16_t reason)
+{
+    switch (normalized_disconnect_reason(reason)) {
+    case 0x05: return "Pairing failed: authentication rejected";
+    case 0x06: return "Pairing failed: stale bond or key missing";
+    case 0x08: return "Pairing timeout: keep controller in pairing mode";
+    case 0x13: return "Pairing canceled by controller";
+    case 0x17: return "Pairing failed: too many repeated attempts";
+    case 0x18: return "Pairing is not supported by controller";
+    case 0x3d: return "Pairing failed: encryption key mismatch";
+    default: return "Pairing disconnected; see disconnect_reason";
+    }
+}
+
+static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_t *event)
+{
+    int pairing = inst->phase == PHASE_PAIRING;
+    int32_t forget_err = MODULE_OK;
+    inst->state.disconnect_reason = event ? event->status : 0;
+    if (pairing) inst->last_error = pairing_disconnect_error(inst->state.disconnect_reason);
     inst->conn_handle = 0xffff;
     inst->state.connected = 0;
     inst->state.connecting = 0;
     inst->state.encrypted = 0;
     inst->pair_requested = 0;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     clear_controls(inst);
     reset_gatt(inst);
+    if (inst->forget_pending) {
+        inst->forget_pending = 0;
+        if (inst->host->ble.gap_forget_device) {
+            forget_err = inst->host->ble.gap_forget_device(
+                inst->session, inst->peer_addr_type, inst->state.address);
+        } else {
+            forget_err = MODULE_ERR_UNSUPPORTED;
+        }
+        if (forget_err == MODULE_ERR_NOT_FOUND && inst->host->ble.gap_clear_bonds) {
+            forget_err = inst->host->ble.gap_clear_bonds(inst->session);
+            if (forget_err == MODULE_ERR_NOT_FOUND) forget_err = MODULE_OK;
+        }
+        if (forget_err == MODULE_OK) {
+            inst->last_error = NULL;
+            inst->state.disconnect_reason = 0;
+        } else {
+            inst->last_error = "Failed to forget controller bond";
+        }
+    }
     schedule_rescan(inst, inst->manual_scan ? 0 : 1200);
 }
 
@@ -746,9 +952,9 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         if (!inst->state.connected && !inst->state.connecting) {
             if (inst->manual_scan) {
                 inst->phase = PHASE_SELECT_DEVICE;
-                mark_dirty(inst);
+                mark_status_dirty(inst);
             } else {
-                schedule_rescan(inst, 1000);
+                schedule_rescan_with_backoff(inst);
             }
         }
         break;
@@ -756,7 +962,7 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         handle_connected(inst, event);
         break;
     case MODULE_BLE_IRQ_PERIPHERAL_DISCONNECT:
-        handle_disconnected(inst);
+        handle_disconnected(inst, event);
         break;
     case MODULE_BLE_IRQ_GATTC_SERVICE_RESULT:
         if (uuid_is16(event->uuid, UUID_HID)) {
@@ -779,6 +985,9 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
     case MODULE_BLE_IRQ_GATTC_CHARACTERISTIC_RESULT:
         if (uuid_is16(event->uuid, UUID_REPORT_MAP)) {
             inst->report_map_handle = event->value_handle;
+        } else if (uuid_is16(event->uuid, UUID_HID_CONTROL_POINT)) {
+            inst->control_point_handle = event->value_handle;
+            inst->control_point_properties = event->properties;
         } else if (uuid_is16(event->uuid, UUID_REPORT) && inst->report_count < HIDPAD_MAX_REPORTS) {
             report = &inst->reports[inst->report_count++];
             report->value_handle = event->value_handle;
@@ -834,10 +1043,15 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
             read_next_reference(inst);
         } else if (inst->pending_read == PENDING_READ_INPUT) {
             inst->pending_read = PENDING_READ_NONE;
+        } else if (inst->pending_read == PENDING_READ_KEEPALIVE) {
+            inst->pending_read = PENDING_READ_NONE;
         }
         break;
     case MODULE_BLE_IRQ_GATTC_WRITE_DONE:
         if (inst->phase == PHASE_SUBSCRIBE) {
+            if (inst->subscribe_index < inst->report_count && event->status == 0) {
+                inst->reports[inst->subscribe_index].subscribed = 1;
+            }
             inst->subscribe_index++;
             subscribe_next(inst);
         }
@@ -848,7 +1062,15 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         break;
     case MODULE_BLE_IRQ_ENCRYPTION_UPDATE:
         inst->state.encrypted = event->encrypted;
-        mark_dirty(inst);
+        mark_status_dirty(inst);
+        if (inst->phase == PHASE_PAIRING) {
+            if (event->encrypted) {
+                start_hid_service_discovery(inst);
+            } else {
+                set_error(inst, "BLE pairing/encryption failed");
+                inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+            }
+        }
         break;
     default:
         break;
@@ -868,8 +1090,45 @@ static void poll_input_fallback(hidpad_instance_t *inst)
         if (inst->input_poll_index >= inst->report_count) inst->input_poll_index = 0;
         if (index >= inst->report_count) index = 0;
         report = &inst->reports[index];
-        if ((report->properties & MODULE_BLE_CHAR_PROP_READ) != 0 && !report->cccd_handle) {
+        if ((report->report_type == 0 || report->report_type == 1) &&
+            (report->properties & MODULE_BLE_CHAR_PROP_READ) != 0 && !report->subscribed) {
             start_read(inst, report->value_handle, PENDING_READ_INPUT, index);
+            return;
+        }
+    }
+}
+
+static void poll_keepalive(hidpad_instance_t *inst)
+{
+    uint32_t now;
+    uint8_t i;
+    if (!inst || inst->phase != PHASE_READY || !inst->state.connected) return;
+    now = now_ms(inst);
+    if ((int32_t)(now - inst->next_keepalive_ms) < 0) return;
+    inst->next_keepalive_ms = now + HIDPAD_KEEPALIVE_MS;
+    if (inst->control_point_handle && inst->host->ble.gattc_write &&
+        (inst->control_point_properties &
+         (MODULE_BLE_CHAR_PROP_WRITE_NO_RESPONSE | MODULE_BLE_CHAR_PROP_WRITE)) != 0) {
+        uint8_t exit_suspend = 1;
+        uint32_t mode = (inst->control_point_properties & MODULE_BLE_CHAR_PROP_WRITE_NO_RESPONSE) != 0 ?
+                        MODULE_BLE_WRITE_NO_RESPONSE : MODULE_BLE_WRITE_WITH_RESPONSE;
+        if (inst->host->ble.gattc_write(inst->session, inst->conn_handle,
+                                        inst->control_point_handle, &exit_suspend,
+                                        sizeof(exit_suspend), mode) == MODULE_OK) {
+            inst->keepalive_count++;
+            return;
+        }
+    }
+    if (inst->pending_read != PENDING_READ_NONE) {
+        inst->next_keepalive_ms = now + HIDPAD_KEEPALIVE_RETRY_MS;
+        return;
+    }
+    for (i = 0; i < inst->report_count; ++i) {
+        report_characteristic_t *report = &inst->reports[i];
+        if ((report->report_type == 0 || report->report_type == 1) &&
+            (report->properties & MODULE_BLE_CHAR_PROP_READ) != 0 &&
+            start_read(inst, report->value_handle, PENDING_READ_KEEPALIVE, i)) {
+            inst->keepalive_count++;
             return;
         }
     }
@@ -881,10 +1140,9 @@ static void driver_poll(hidpad_instance_t *inst)
     module_ble_event_t *event;
     if (!inst || !inst->started) return;
     event = &inst->event_work;
+    event->size = sizeof(*event);
     for (i = 0; i < HIDPAD_EVENT_BUDGET; ++i) {
         int32_t err;
-        zero_bytes(event, sizeof(*event));
-        event->size = sizeof(*event);
         err = inst->host->ble.event_poll(inst->session, event);
         if (err == MODULE_ERR_NOT_FOUND) break;
         if (err != MODULE_OK) {
@@ -898,6 +1156,7 @@ static void driver_poll(hidpad_instance_t *inst)
         start_scan(inst);
     }
     poll_input_fallback(inst);
+    poll_keepalive(inst);
 }
 
 static int driver_start(hidpad_instance_t *inst)
@@ -925,7 +1184,10 @@ static int driver_start(hidpad_instance_t *inst)
     inst->started = 1;
     inst->conn_handle = 0xffff;
     inst->state_dirty = 1;
+    inst->status_dirty = 1;
     inst->last_error = NULL;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
+    inst->keepalive_count = 0;
     clear_controls(inst);
     reset_gatt(inst);
     /* start_scan schedules a retry on transient host errors. */
@@ -948,7 +1210,7 @@ static void driver_stop(hidpad_instance_t *inst)
     inst->state.connecting = 0;
     inst->phase = PHASE_STOPPED;
     clear_controls(inst);
-    mark_dirty(inst);
+    mark_status_dirty(inst);
 }
 
 static void set_integer_field(lua_State *L, const module_host_api_v2 *host,
@@ -975,7 +1237,7 @@ static void set_string_field(lua_State *L, const module_host_api_v2 *host,
 static void push_state(lua_State *L, hidpad_instance_t *inst)
 {
     const module_host_api_v2 *host = inst->host;
-    host->lua.createtable(L, 0, 24);
+    host->lua.createtable(L, 0, 27);
     set_integer_field(L, host, "seq", inst->state.seq);
     set_integer_field(L, host, "timestamp_ms", inst->state.timestamp_ms);
     set_integer_field(L, host, "buttons", inst->state.buttons);
@@ -991,8 +1253,11 @@ static void push_state(lua_State *L, hidpad_instance_t *inst)
     set_boolean_field(L, host, "connected", inst->state.connected);
     set_boolean_field(L, host, "connecting", inst->state.connecting);
     set_boolean_field(L, host, "encrypted", inst->state.encrypted);
+    set_integer_field(L, host, "disconnect_reason", inst->state.disconnect_reason);
     set_boolean_field(L, host, "manual_scan", inst->manual_scan);
     set_integer_field(L, host, "scan_count", inst->scan_result_count);
+    set_integer_field(L, host, "keepalive_count", inst->keepalive_count);
+    set_boolean_field(L, host, "keepalive_supported", inst->control_point_handle != 0);
     set_string_field(L, host, "phase", phase_text(inst->phase));
     set_string_field(L, host, "profile", profile_text(inst->profile));
     set_string_field(L, host, "address", inst->state.address);
@@ -1000,6 +1265,23 @@ static void push_state(lua_State *L, hidpad_instance_t *inst)
     set_string_field(L, host, "last_error", inst->last_error);
     host->lua.pushlstring(L, (const char *)inst->state.raw_report, inst->state.raw_report_len);
     host->lua.setfield(L, -2, "raw_report");
+}
+
+static void push_input_state(lua_State *L, hidpad_instance_t *inst)
+{
+    const module_host_api_v2 *host = inst->host;
+    host->lua.createtable(L, 0, 11);
+    set_integer_field(L, host, "seq", inst->state.seq);
+    set_integer_field(L, host, "timestamp_ms", inst->state.timestamp_ms);
+    set_integer_field(L, host, "buttons", inst->state.buttons);
+    set_integer_field(L, host, "raw_buttons", inst->state.raw_buttons);
+    set_integer_field(L, host, "lx", inst->state.lx);
+    set_integer_field(L, host, "ly", inst->state.ly);
+    set_integer_field(L, host, "rx", inst->state.rx);
+    set_integer_field(L, host, "ry", inst->state.ry);
+    set_integer_field(L, host, "lt", inst->state.lt);
+    set_integer_field(L, host, "rt", inst->state.rt);
+    set_integer_field(L, host, "report_id", inst->state.report_id);
 }
 
 static hidpad_instance_t *lua_instance(lua_State *L, const module_host_api_v2 *host)
@@ -1038,7 +1320,12 @@ static int l_poll(lua_State *L)
         return 1;
     }
     inst->state_dirty = 0;
-    push_state(L, inst);
+    if (inst->status_dirty) {
+        inst->status_dirty = 0;
+        push_state(L, inst);
+    } else {
+        push_input_state(L, inst);
+    }
     return 1;
 }
 
@@ -1056,6 +1343,7 @@ static int l_rescan(lua_State *L)
     if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
     if (inst->state.connecting) return push_error(L, &s_host, "connection is still in progress");
     inst->manual_scan = 0;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     if (inst->state.connected && inst->conn_handle != 0xffff) {
         inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
@@ -1075,6 +1363,7 @@ static int l_scan(lua_State *L)
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     inst->scan_active = 0;
     inst->manual_scan = 1;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->scan_result_count = 0;
     zero_bytes(inst->scan_results, sizeof(inst->scan_results));
     if (inst->state.connected && inst->conn_handle != 0xffff) {
@@ -1188,6 +1477,59 @@ static int l_pair(lua_State *L)
     return 1;
 }
 
+static int l_forget(lua_State *L)
+{
+    hidpad_instance_t *inst = lua_instance(L, &s_host);
+    int32_t err;
+    if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
+    if (!inst->host->ble.gap_forget_device) {
+        return push_error(L, &s_host, "firmware does not support forgetting bonds");
+    }
+    if (!inst->state.address[0]) {
+        if (!inst->host->ble.gap_clear_bonds) {
+            return push_error(L, &s_host, "controller address is missing");
+        }
+        if (inst->scan_active) {
+            inst->host->ble.gap_scan_stop(inst->session);
+            inst->scan_active = 0;
+        }
+        err = inst->host->ble.gap_clear_bonds(inst->session);
+        if (err != MODULE_OK && err != MODULE_ERR_NOT_FOUND) {
+            return push_error(L, &s_host, "clear controller bonds failed");
+        }
+        inst->last_error = NULL;
+        inst->state.disconnect_reason = 0;
+        schedule_rescan(inst, 0);
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
+    if (inst->state.connected && inst->conn_handle != 0xffff) {
+        inst->forget_pending = 1;
+        if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
+            inst->forget_pending = 0;
+            return push_error(L, &s_host, "disconnect before forgetting bond failed");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
+    if (inst->scan_active) {
+        inst->host->ble.gap_scan_stop(inst->session);
+        inst->scan_active = 0;
+    }
+    err = inst->host->ble.gap_forget_device(
+        inst->session, inst->peer_addr_type, inst->state.address);
+    if (err == MODULE_ERR_NOT_FOUND && inst->host->ble.gap_clear_bonds) {
+        err = inst->host->ble.gap_clear_bonds(inst->session);
+        if (err == MODULE_ERR_NOT_FOUND) err = MODULE_OK;
+    }
+    if (err != MODULE_OK) return push_error(L, &s_host, "forget controller bond failed");
+    inst->last_error = NULL;
+    inst->state.disconnect_reason = 0;
+    schedule_rescan(inst, 0);
+    s_host.lua.pushboolean(L, 1);
+    return 1;
+}
+
 static int l_stop(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
@@ -1231,12 +1573,15 @@ HIDPAD_EXPORT int32_t module_create_v2(module_host_resolve_v2_fn resolve,
     if (!s_host.ble.open || !s_host.ble.event_poll || !s_host.heap.calloc || !s_host.heap.free ||
         !s_host.lua.createtable || !s_host.lua.pushlstring) return MODULE_ERR_UNSUPPORTED;
     inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst),
-                                                   MODULE_HEAP_PSRAM | MODULE_HEAP_8BIT);
+                                                   MODULE_HEAP_INTERNAL | MODULE_HEAP_8BIT);
+    if (!inst) inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst),
+                                                              MODULE_HEAP_PSRAM | MODULE_HEAP_8BIT);
     if (!inst) inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst), MODULE_HEAP_DEFAULT);
     if (!inst) return MODULE_ERR_NO_MEMORY;
     inst->host = &s_host;
     inst->owner_token = info->owner_token;
     inst->scan_ms = 8000;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->conn_handle = 0xffff;
     inst->phase = PHASE_STOPPED;
     inst->profile = DEVICE_PROFILE_HID;
@@ -1261,6 +1606,7 @@ HIDPAD_EXPORT int32_t module_luaopen_v1(void *instance, lua_State *L)
     set_function(L, "set_preferred", l_set_preferred, inst);
     set_function(L, "disconnect", l_disconnect, inst);
     set_function(L, "pair", l_pair, inst);
+    set_function(L, "forget", l_forget, inst);
     set_function(L, "stop", l_stop, inst);
     set_constant(L, "BTN_UP", BTN_UP);
     set_constant(L, "BTN_DOWN", BTN_DOWN);

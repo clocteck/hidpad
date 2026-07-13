@@ -14,13 +14,36 @@
 ## 支持的手柄
 
 - Xbox Wireless Controller：沿用旧 Gamepad 的 16 字节 Xbox Input Report 解码。
-- Q36 / Android 手柄：发现 HID Service `0x1812`、Report Map `0x2A4B`、Input
-  Report `0x2A4D`、Report Reference `0x2908` 和 CCCD `0x2902`，使用旧版 Q36
-  按钮规则。
-- 其他 BLE HID 手柄：根据 HID Report Map 解析方向帽、按钮、双摇杆和扳机。
+- BLE HID 手柄：广播中发现 HID Service `0x1812` 后，优先使用 Q36 profile；连接后
+  发现 Report Map `0x2A4B`、Input Report `0x2A4D`、Report Reference `0x2908` 和
+  CCCD `0x2902`，根据 HID Report Map 解析方向帽、按钮、双摇杆和扳机。
+- 名称包含 `Q36` 或 `ShanWan` 的设备，即使广播包没有携带 `0x1812`，也使用 Q36
+  profile 尝试连接。
+
+## Q36 profile
+
+Q36 profile 是当前对 Android BLE HID 手柄的优先兼容规则。Xbox 会先被识别并走独立的
+16 字节报告解码；除此之外，所有广播了 HID Service `0x1812` 的手柄都先按 Q36
+profile 处理。WebUI 和状态接口中显示为 `q36-hid`。
+
+Q36 profile 仍以手柄提供的 HID Report Map 决定字段位置、位宽和轴范围，但采用以下
+按钮语义：
+
+- Hat Switch：`0` 表示松开，`1`～`8` 依次表示上、右上、右、右下、下、左下、左、左上；
+- Button Usage `1/2/4/5`：分别映射为 `A/B/X/Y`；
+- Button Usage `7/8`：分别映射为 `LB/RB`；
+- Button Usage `9/10`：作为数字 `LT/RT`，按下值为满量程；
+- Button Usage `11/12/13/14`：分别映射为 `View/Menu/Home/Share`；
+- `X/Y/Z/Rx/Ry/Rz` 等轴和扳机字段按 Report Map 中的 logical range 归一化。
+
+这是一套兼容性优先的默认规则。某个 `0x1812` 手柄如果使用零起始方向帽
+（`0` 表示“上”、其他值表示其余方向），会与 Q36 的 `0=松开` 约定冲突，后续应为该
+型号增加独立 profile，而不是修改 Q36 规则。
 
 通知订阅通过 descriptor discovery 查找 CCCD，不使用 `value_handle + 1` 猜测。
 没有 notify/indicate 的可读 Input Report 会由驱动低频轮询。
+驱动发现 HID Control Point `0x2A4C` 后，每 15 秒发送一次标准 Exit Suspend 命令；没有
+Control Point 时低频读取可读 Input Report，避免部分手柄在无按键时进入应用层休眠。
 
 ## 运行过程
 
@@ -40,7 +63,7 @@
 NimBLE 回调复制到固定队列的事件。为避免占用 Service 的 `lua_update` C 调用栈：
 
 - `module_ble_event_t`、BLE config/scan config、HID decoded report 和广播解析缓冲都放在
-  模块实例中；实例由 host heap 分配到 PSRAM；
+  模块实例中；热路径优先使用内部 RAM，内部 RAM 不足时回退到 PSRAM；
 - HID Report Map parser 的 global/local state、push stack 和 report offset 表使用模块
   静态工作区；
 - 构建启用 `-fconserve-stack`，并用 `-Wframe-larger-than=256` 阻止以后重新引入较大
@@ -48,9 +71,11 @@ NimBLE 回调复制到固定队列的事件。为避免占用 Service 的 `lua_u
 
 这些缓冲均为单 BLE owner 串行复用，不增加后台任务或并发锁。
 
-Lua 只在 `.so` 返回 dirty state 时执行映射；标准化输出没有变化时不再调用
-`controller.publish`。禁用蓝牙手柄后会停止 20ms timer 并关闭 BLE session，Service
-本身仍常驻以保留 IPC 和 Web 管理能力。
+驱动会缓存短报告并跳过完全重复的通知；多 Report ID 的按键、Consumer Control、摇杆和
+扳机按有效字段合并，只有公开控制状态确实变化时才返回精简输入状态。Lua 只在 `.so`
+返回 dirty state 时执行映射；标准化输出没有变化时不再调用 `controller.publish`。禁用
+蓝牙手柄后会停止 20ms timer 并关闭 BLE session，Service 本身仍常驻以保留 IPC 和 Web
+管理能力。
 
 ## Web 和 IPC
 
@@ -75,7 +100,8 @@ WebUI 路由默认为 `/hidpad/`，提供：
 
 页面只在首次加载和执行命令后读取完整配置；实时显示改用精简的 `/api/input`，前台
 每 400ms 读取一次数字状态。设备列表仅在手动扫描期间读取，避免持续编码配置和扫描
-结果。驱动扫描结果使用模块实例中的 8 项定长 PSRAM 数组，不创建任务或事件表。
+结果。驱动扫描结果使用模块实例中的 8 项定长数组，不创建任务或事件表。手动扫描保持
+高响应扫描参数；自动重连使用 12.5% 扫描窗口和最高 30 秒指数退避。
 
 IPC endpoint 为 `ble-controller`，topic 支持：
 
@@ -129,4 +155,4 @@ E:\cubicsrc\APPS\hidpad_build\hidpad.so
 E:\cubicsrc\APPS\hidpad\package\modules\hidpad.so
 ```
 
-部署整个 `package/` 到 `/sd/apps/hidpad/`。本次实现没有执行设备上传或烧录。
+部署整个 `package/` 到 `/sd/apps/hidpad/`。

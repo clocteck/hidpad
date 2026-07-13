@@ -1,4 +1,5 @@
 name = HID Pad
+version = 0.0.2
 entry = main.lua
 kind = service
 allow_webui = true

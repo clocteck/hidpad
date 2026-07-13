@@ -10,6 +10,15 @@ extern "C" {
 #define HIDPAD_MAX_REPORT_FIELDS 96
 #define HIDPAD_MAX_REPORT_LAYOUTS 12
 
+#define HIDPAD_VALID_GAME_BUTTONS (1u << 0)
+#define HIDPAD_VALID_CONSUMER_BUTTONS (1u << 1)
+#define HIDPAD_VALID_LX (1u << 2)
+#define HIDPAD_VALID_LY (1u << 3)
+#define HIDPAD_VALID_RX (1u << 4)
+#define HIDPAD_VALID_RY (1u << 5)
+#define HIDPAD_VALID_LT (1u << 6)
+#define HIDPAD_VALID_RT (1u << 7)
+
 typedef enum hidpad_profile_t {
     HIDPAD_PROFILE_GENERIC = 0,
     HIDPAD_PROFILE_Q36 = 1,
@@ -17,6 +26,7 @@ typedef enum hidpad_profile_t {
 
 typedef struct hidpad_decoded_report_t {
     uint32_t buttons;
+    uint32_t consumer_buttons;
     uint32_t raw_buttons;
     int16_t lx;
     int16_t ly;
@@ -24,6 +34,7 @@ typedef struct hidpad_decoded_report_t {
     int16_t ry;
     uint16_t lt;
     uint16_t rt;
+    uint16_t valid_mask;
     uint8_t report_id;
 } hidpad_decoded_report_t;
 
@@ -33,8 +44,6 @@ typedef struct hidpad_report_field_t {
     uint8_t size_bits;
     uint16_t usage_page;
     uint16_t usage;
-    uint16_t usage_min;
-    uint16_t usage_max;
     int32_t logical_min;
     int32_t logical_max;
     uint8_t variable;
@@ -45,6 +54,10 @@ typedef struct hidpad_report_layout_t {
     uint16_t bits;
     uint16_t payload_bytes;
     uint16_t total_bytes;
+    uint16_t first_field;
+    uint16_t field_count;
+    uint8_t has_rx;
+    uint8_t has_ry;
 } hidpad_report_layout_t;
 
 typedef struct hidpad_report_parser_t {
