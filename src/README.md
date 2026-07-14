@@ -41,7 +41,9 @@ Q36 profile 仍以手柄提供的 HID Report Map 决定字段位置、位宽和�
 
 连接链路也保持旧 Q36 行为：先用 16-bit `1812` 查找 HID Service，找不到时改用完整
 Bluetooth Base UUID `00001812-0000-1000-8000-00805f9b34fb`，整套初始化最多执行两次。
-Q36 必须成功读取并解析 Report Map；随后只订阅带 notify/indicate 的 Input Report，
+Q36 必须成功读取 Report Map；标准手柄字段按 Map 解析，`Q36 for Android`/ShanWan
+的键盘型 Map 则使用该手柄的 10 字节定长输入格式兼容解码。随后只订阅带
+notify/indicate 的 Input Report，
 Report ID `3` 继续作为 Consumer Report 与普通手柄状态合并。Xbox 则和旧
 `LiteXboxController` 一样，只订阅第一个支持 notify 的 `0x2A4D` controls report。
 

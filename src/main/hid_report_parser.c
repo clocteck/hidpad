@@ -262,6 +262,47 @@ static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
     }
 }
 
+int hidpad_q36_decode_android(uint8_t report_id,
+                              const uint8_t *data,
+                              size_t len,
+                              hidpad_decoded_report_t *out)
+{
+    size_t offset = 0;
+    uint8_t buttons;
+    uint8_t system;
+    if (!data || !out) return 0;
+    if (len == 11 && data[1] == 0x80 && data[2] == 0x80 &&
+        data[3] == 0x80 && data[4] == 0x80) {
+        offset = 1;
+        if (report_id == 0) report_id = data[0];
+    } else if (len != 10 || data[0] != 0x80 || data[1] != 0x80 ||
+               data[2] != 0x80 || data[3] != 0x80) {
+        return 0;
+    }
+
+    zero_bytes(out, sizeof(*out));
+    out->report_id = report_id;
+    out->valid_mask = HIDPAD_VALID_GAME_BUTTONS | HIDPAD_VALID_LT | HIDPAD_VALID_RT;
+    apply_hat(out, data[offset + 4], 0, 7, HIDPAD_PROFILE_Q36);
+
+    buttons = data[offset + 5];
+    system = data[offset + 6];
+    out->raw_buttons = (uint32_t)buttons | ((uint32_t)system << 8);
+    if (buttons & (1u << 0)) out->buttons |= BTN_A;
+    if (buttons & (1u << 1)) out->buttons |= BTN_B;
+    if (buttons & (1u << 3)) out->buttons |= BTN_X;
+    if (buttons & (1u << 4)) out->buttons |= BTN_Y;
+    if (buttons & (1u << 6)) out->buttons |= BTN_LB;
+    if (buttons & (1u << 7)) out->buttons |= BTN_RB;
+    if (system & (1u << 0)) out->lt = 65535;
+    if (system & (1u << 1)) out->rt = 65535;
+    if (system & (1u << 2)) out->buttons |= BTN_VIEW;
+    if (system & (1u << 3)) out->buttons |= BTN_MENU;
+    if (system & (1u << 4)) out->buttons |= BTN_HOME;
+    if (system & (1u << 5)) out->buttons |= BTN_SHARE;
+    return 1;
+}
+
 static void set_layout(hidpad_report_parser_t *parser, uint8_t report_id, uint16_t bits)
 {
     uint8_t i;
