@@ -66,7 +66,7 @@ Control Point 时低频读取可读 Input Report，避免部分通用 HID 手柄
 
 ## 任务与栈
 
-`hidpad.so` 不创建 FreeRTOS 任务。Lua 每 20ms 调用一次 `poll()`，驱动只消费固件
+`hidpad.so` 不创建 FreeRTOS 任务。Lua 每 5ms 调用一次 `poll()`，驱动只消费固件
 NimBLE 回调复制到固定队列的事件。为避免占用 Service 的 `lua_update` C 调用栈：
 
 - `module_ble_event_t`、BLE config/scan config、HID decoded report 和广播解析缓冲都放在
@@ -81,7 +81,7 @@ NimBLE 回调复制到固定队列的事件。为避免占用 Service 的 `lua_u
 驱动会缓存短报告并跳过完全重复的通知；多 Report ID 的按键、Consumer Control、摇杆和
 扳机按有效字段合并，只有公开控制状态确实变化时才返回精简输入状态。Lua 只在 `.so`
 返回 dirty state 时执行映射；标准化输出没有变化时不再调用 `controller.publish`。禁用
-蓝牙手柄后会停止 20ms timer 并关闭 BLE session，Service 本身仍常驻以保留 IPC 和 Web
+蓝牙手柄后会停止 5ms timer 并关闭 BLE session，Service 本身仍常驻以保留 IPC 和 Web
 管理能力。
 
 ## Web 和 IPC
