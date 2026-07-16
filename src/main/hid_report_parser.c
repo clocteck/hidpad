@@ -237,11 +237,9 @@ static int field_is_relevant(uint16_t usage_page, uint16_t usage)
 }
 
 static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
-                      int32_t logical_min, int32_t logical_max,
-                      hidpad_profile_t profile)
+                      int32_t logical_min, int32_t logical_max)
 {
     int32_t dir = -1;
-    (void)profile;
     /* Preserve the old Q36 parser: the Report Map logical range decides
      * whether the hat is 1..8 or 0..7. */
     if (logical_min == 1 && logical_max >= 8 && raw >= 1 && raw <= 8) {
@@ -562,7 +560,7 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
                 if (has_ry) { out->valid_mask |= HIDPAD_VALID_RT; out->rt = normalize_trigger(raw, field->logical_min, field->logical_max); }
                 else { out->valid_mask |= HIDPAD_VALID_RY; out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); }
                 break;
-            case USAGE_HAT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; apply_hat(out, raw, field->logical_min, field->logical_max, profile); break;
+            case USAGE_HAT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; apply_hat(out, raw, field->logical_min, field->logical_max); break;
             default: break;
             }
         }

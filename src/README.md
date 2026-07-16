@@ -66,22 +66,27 @@ Control Point 时低频读取可读 Input Report，避免部分通用 HID 手柄
 
 ## 任务与栈
 
-`hidpad.so` 不创建 FreeRTOS 任务。Lua 每 5ms 调用一次 `poll()`，驱动只消费固件
-NimBLE 回调复制到固定队列的事件。为避免占用 Service 的 `lua_update` C 调用栈：
+新固件提供 `runtime.event_post` 时，`hidpad.so` 创建一个绑定 CPU0、6KB PSRAM 栈的
+`hidpad_worker`，由它处理扫描、连接、配对、GATT 与 HID 报告；Lua callback 只读取合并状态并
+发布 controller/IPC。旧固件不支持该 ABI 时会输出
+`runtime.event_post unsupported; please update to latest firmware`，并保持 Lua 每 10ms 调用
+`poll()` 的兼容路径。
+
+为减少工作任务的栈峰值：
 
 - `module_ble_event_t`、BLE config/scan config、HID decoded report 和广播解析缓冲都放在
-  模块实例中；热路径优先使用内部 RAM，内部 RAM 不足时回退到 PSRAM；
+  模块实例中；热路径实例优先使用内部 RAM，冷状态明确放入 PSRAM；
 - HID Report Map parser 的 global/local state、push stack 和 report offset 表使用模块
   静态工作区；
 - 构建启用 `-fconserve-stack`，并用 `-Wframe-larger-than=256` 阻止以后重新引入较大
   栈帧。
 
-这些缓冲均为单 BLE owner 串行复用，不增加后台任务或并发锁。
+这些缓冲由单 BLE owner 串行复用；Lua 读取状态时通过模块 mutex 与 worker 隔离。
 
 驱动会缓存短报告并跳过完全重复的通知；多 Report ID 的按键、Consumer Control、摇杆和
 扳机按有效字段合并，只有公开控制状态确实变化时才返回精简输入状态。Lua 只在 `.so`
 返回 dirty state 时执行映射；标准化输出没有变化时不再调用 `controller.publish`。禁用
-蓝牙手柄后会停止 5ms timer 并关闭 BLE session，Service 本身仍常驻以保留 IPC 和 Web
+蓝牙手柄后会停止 poll timer 并关闭 BLE session，Service 本身仍常驻以保留 IPC 和 Web
 管理能力。
 
 ## Web 和 IPC
@@ -106,9 +111,13 @@ WebUI 路由默认为 `/hidpad/`，提供：
 摇杆变化不会逐报告打印，避免高频刷屏。
 
 页面只在首次加载和执行命令后读取完整配置；实时显示改用精简的 `/api/input`，前台
-每 400ms 读取一次数字状态。设备列表仅在手动扫描期间读取，避免持续编码配置和扫描
+已连接或扫描时每 400ms 读取一次数字状态，空闲未连接时降为 1500ms，页面隐藏时降为
+5000ms。设备列表仅在手动扫描期间读取，并在扫描结束时补读一次，避免持续编码配置和扫描
 结果。驱动扫描结果使用模块实例中的 8 项定长数组，不创建任务或事件表。手动扫描保持
-高响应扫描参数；自动重连使用 12.5% 扫描窗口和最高 30 秒指数退避。
+高响应扫描参数；自动重连使用 12.5% 扫描窗口和最高 8 秒指数退避。自动或手动扫描发现
+名称包含 Xbox、Q36 或 Q34 的设备时会立即连接；成功连接过的首选设备也会按地址自动连接。
+服务启动和断线重连都先扫描再连接，保证 Q34/Q36 的 GATT 初始化顺序一致。
+手柄已连接时执行手动扫描会保持当前连接，并行更新设备列表，不会切换到扫描到的其他手柄。
 
 IPC endpoint 为 `ble-controller`，topic 支持：
 

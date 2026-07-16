@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "0.4.1"
+#define HIDPAD_VERSION "0.5.0"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 8
@@ -13,11 +13,114 @@
 #define HIDPAD_KEEPALIVE_MS 15000u
 #define HIDPAD_KEEPALIVE_RETRY_MS 3000u
 #define HIDPAD_RESCAN_MIN_MS 1000u
-#define HIDPAD_RESCAN_MAX_MS 30000u
+#define HIDPAD_RESCAN_MAX_MS 8000u
 #define HIDPAD_CONN_INTERVAL_MIN 7u
 #define HIDPAD_CONN_INTERVAL_MAX 24u
 #define HIDPAD_CONN_LATENCY 0u
 #define HIDPAD_CONN_SUPERVISION_TIMEOUT 500u
+#define HIDPAD_WORKER_STACK_BYTES (6u * 1024u)
+#define HIDPAD_WORKER_PRIORITY 2u
+#define HIDPAD_WORKER_CORE 0
+
+/* Keep only the host procedures used by this module. The public procedure IDs
+ * remain the firmware/module boundary; this compact table is module-local. */
+typedef struct hidpad_time_api_t {
+    uint32_t (*millis)(void);
+} hidpad_time_api_t;
+
+typedef struct hidpad_heap_api_t {
+    void *(*calloc)(size_t n, size_t size, uint32_t caps);
+    void (*free)(void *ptr);
+} hidpad_heap_api_t;
+
+typedef struct hidpad_serial_api_t {
+    void (*println)(const char *text);
+} hidpad_serial_api_t;
+
+typedef struct hidpad_task_api_t {
+    int32_t (*create_ex)(const char *name, void (*entry)(void *), void *arg,
+                         uint32_t stack_bytes, uint32_t priority, int32_t core,
+                         uint32_t heap_caps, void **out_task);
+} hidpad_task_api_t;
+
+typedef struct hidpad_sync_api_t {
+    int32_t (*create_counting)(uint32_t max_count, uint32_t initial_count,
+                               module_sync_handle_t *out_handle);
+    int32_t (*create_mutex)(module_sync_handle_t *out_handle);
+    int32_t (*take)(module_sync_handle_t handle, uint32_t timeout_ms);
+    int32_t (*give)(module_sync_handle_t handle);
+    void (*destroy)(module_sync_handle_t handle);
+} hidpad_sync_api_t;
+
+typedef struct hidpad_runtime_api_t {
+    int32_t (*event_post)(lua_State *L, int32_t lua_ref);
+    void (*event_cancel)(lua_State *L, int32_t lua_ref);
+} hidpad_runtime_api_t;
+
+typedef struct hidpad_lua_api_t {
+    int (*gettop)(lua_State *L);
+    int (*isnil)(lua_State *L, int idx);
+    int (*istable)(lua_State *L, int idx);
+    int (*isnumber)(lua_State *L, int idx);
+    int (*isstring)(lua_State *L, int idx);
+    int64_t (*tointeger)(lua_State *L, int idx);
+    const char *(*tostring)(lua_State *L, int idx);
+    void *(*touserdata)(lua_State *L, int idx);
+    void (*pushnil)(lua_State *L);
+    void (*pushboolean)(lua_State *L, int value);
+    void (*pushinteger)(lua_State *L, int64_t value);
+    void (*pushstring)(lua_State *L, const char *text);
+    void (*pushlightuserdata)(lua_State *L, void *ptr);
+    void (*pushcclosure)(lua_State *L, module_lua_cfunction_t fn, int nup);
+    void (*pushvalue)(lua_State *L, int idx);
+    void (*createtable)(lua_State *L, int narr, int nrec);
+    void (*setfield)(lua_State *L, int idx, const char *key);
+    int (*registry_ref)(lua_State *L);
+    void (*registry_unref)(lua_State *L, int ref);
+    int (*upvalue_index)(int n);
+} hidpad_lua_api_t;
+
+typedef struct hidpad_ble_api_t {
+    int32_t (*open)(uint32_t owner_token, const module_ble_config_t *cfg,
+                    module_ble_session_t *out_session);
+    int32_t (*close)(module_ble_session_t session);
+    int32_t (*gap_scan)(module_ble_session_t session, const module_ble_scan_config_t *cfg);
+    int32_t (*gap_scan_stop)(module_ble_session_t session);
+    int32_t (*gap_connect)(module_ble_session_t session, uint8_t addr_type,
+                           const char *address, uint32_t timeout_ms);
+    int32_t (*gap_disconnect)(module_ble_session_t session, uint16_t conn_handle);
+    int32_t (*gap_pair)(module_ble_session_t session, uint16_t conn_handle, int32_t async_pair);
+    int32_t (*gattc_discover_services)(module_ble_session_t session, uint16_t conn_handle,
+                                       const char *uuid_or_null);
+    int32_t (*gattc_discover_characteristics)(module_ble_session_t session, uint16_t conn_handle,
+                                              uint16_t start_handle, uint16_t end_handle,
+                                              const char *uuid_or_null);
+    int32_t (*gattc_discover_descriptors)(module_ble_session_t session, uint16_t conn_handle,
+                                          uint16_t start_handle, uint16_t end_handle);
+    int32_t (*gattc_read)(module_ble_session_t session, uint16_t conn_handle,
+                          uint16_t value_handle);
+    int32_t (*gattc_write)(module_ble_session_t session, uint16_t conn_handle,
+                           uint16_t value_handle, const void *data, size_t data_len,
+                           uint32_t mode);
+    int32_t (*event_poll)(module_ble_session_t session, module_ble_event_t *out_event);
+    int32_t (*gap_set_connection_params)(module_ble_session_t session, uint16_t conn_handle,
+                                         uint16_t min_interval, uint16_t max_interval,
+                                         uint16_t latency, uint16_t supervision_timeout);
+    int32_t (*gap_forget_device)(module_ble_session_t session, uint8_t addr_type,
+                                 const char *address);
+    int32_t (*gap_clear_bonds)(module_ble_session_t session);
+} hidpad_ble_api_t;
+
+typedef struct hidpad_host_api_t {
+    hidpad_serial_api_t serial;
+    hidpad_time_api_t time;
+    hidpad_heap_api_t heap;
+    hidpad_task_api_t task;
+    hidpad_sync_api_t sync;
+    hidpad_lua_api_t lua;
+    hidpad_ble_api_t ble;
+    hidpad_runtime_api_t runtime;
+} hidpad_host_api_t;
 
 #define UUID_HID 0x1812u
 #define UUID_REPORT_MAP 0x2a4bu
@@ -77,6 +180,16 @@ typedef enum pending_read_t {
     PENDING_READ_KEEPALIVE,
 } pending_read_t;
 
+typedef enum worker_command_t {
+    WORKER_COMMAND_NONE = 0,
+    WORKER_COMMAND_RESCAN,
+    WORKER_COMMAND_SCAN,
+    WORKER_COMMAND_CONNECT,
+    WORKER_COMMAND_DISCONNECT,
+    WORKER_COMMAND_PAIR,
+    WORKER_COMMAND_FORGET,
+} worker_command_t;
+
 typedef struct report_characteristic_t {
     uint16_t value_handle;
     uint16_t descriptor_end_handle;
@@ -113,8 +226,6 @@ typedef struct driver_state_t {
     uint16_t disconnect_reason;
     char address[18];
     char name[40];
-    uint8_t raw_report[244];
-    uint16_t raw_report_len;
 } driver_state_t;
 
 typedef struct advertisement_t {
@@ -133,8 +244,22 @@ typedef struct discovered_device_t {
     uint8_t score;
 } discovered_device_t;
 
+/* Scan/discovery/configuration data is not touched by the ready input path. */
+typedef struct hidpad_cold_state_t {
+    discovered_device_t scan_results[HIDPAD_MAX_SCAN_RESULTS];
+    module_ble_config_t config_work;
+    module_ble_scan_config_t scan_work;
+    advertisement_t advertisement_work;
+    char preferred_address[18];
+    char preferred_name[40];
+    device_profile_t preferred_profile;
+    uint8_t preferred_addr_type;
+    uint8_t preferred_metadata_valid;
+} hidpad_cold_state_t;
+
 typedef struct hidpad_instance_t {
-    const module_host_api_v2 *host;
+    const hidpad_host_api_t *host;
+    hidpad_cold_state_t *cold;
     uint32_t owner_token;
     module_ble_session_t session;
     driver_phase_t phase;
@@ -145,9 +270,10 @@ typedef struct hidpad_instance_t {
     uint8_t scan_result_count;
     uint8_t state_dirty;
     uint8_t status_dirty;
-    uint8_t pair_requested;
     uint8_t peer_addr_type;
     uint8_t forget_pending;
+    uint8_t direct_reconnect_pending;
+    uint8_t force_scan_once;
     uint32_t scan_ms;
     uint32_t rescan_backoff_ms;
     uint32_t next_scan_ms;
@@ -177,19 +303,24 @@ typedef struct hidpad_instance_t {
     hidpad_report_parser_t parser;
     uint32_t game_buttons;
     uint32_t consumer_buttons;
-    char preferred_address[18];
-    discovered_device_t scan_results[HIDPAD_MAX_SCAN_RESULTS];
     driver_state_t state;
     /* Reused heap work buffers: internal RAM is preferred for the hot input path. */
     module_ble_event_t event_work;
-    module_ble_config_t config_work;
-    module_ble_scan_config_t scan_work;
     hidpad_decoded_report_t decoded_work;
-    advertisement_t advertisement_work;
     const char *last_error;
+    lua_State *lua;
+    int32_t event_ref;
+    void *worker_task;
+    module_sync_handle_t worker_mutex;
+    module_sync_handle_t worker_wake;
+    module_sync_handle_t worker_stopped;
+    volatile uint8_t worker_running;
+    volatile uint8_t worker_stop;
+    worker_command_t worker_command;
+    char worker_command_address[18];
 } hidpad_instance_t;
 
-static module_host_api_v2 s_host;
+static hidpad_host_api_t s_host;
 
 static const module_manifest_t s_manifest = {
     MODULE_MANIFEST_MAGIC,
@@ -209,6 +340,89 @@ static void zero_bytes(void *ptr, size_t len)
     if (!bytes) return;
     for (i = 0; i < len; ++i) bytes[i] = 0;
 }
+
+#define HIDPAD_RESOLVE_REQUIRED(proc_id, slot)                                      \
+    do {                                                                            \
+        void *proc = NULL;                                                          \
+        err = module_sdk_resolve_required_v2(resolve, resolve_ctx, proc_id, &proc); \
+        if (err != MODULE_OK) return err;                                            \
+        slot = (__typeof__(slot))proc;                                               \
+    } while (0)
+
+#define HIDPAD_RESOLVE_OPTIONAL(proc_id, slot)                                      \
+    do {                                                                            \
+        void *proc = NULL;                                                          \
+        err = module_sdk_resolve_optional_v2(resolve, resolve_ctx, proc_id, &proc); \
+        if (err != MODULE_OK) return err;                                            \
+        slot = (__typeof__(slot))proc;                                               \
+    } while (0)
+
+static int32_t resolve_host(module_host_resolve_v2_fn resolve, void *resolve_ctx)
+{
+    int32_t err;
+    zero_bytes(&s_host, sizeof(s_host));
+
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SERIAL_PRINTLN_V1, s_host.serial.println);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_TIME_MILLIS_V1, s_host.time.millis);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_HEAP_CALLOC_V1, s_host.heap.calloc);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_HEAP_FREE_V1, s_host.heap.free);
+
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_GETTOP_V1, s_host.lua.gettop);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_ISNIL_V1, s_host.lua.isnil);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_ISTABLE_V1, s_host.lua.istable);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_ISNUMBER_V1, s_host.lua.isnumber);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_ISSTRING_V1, s_host.lua.isstring);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_TOINTEGER_V1, s_host.lua.tointeger);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_TOSTRING_V1, s_host.lua.tostring);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_TOUSERDATA_V1, s_host.lua.touserdata);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHNIL_V1, s_host.lua.pushnil);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHBOOLEAN_V1, s_host.lua.pushboolean);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHINTEGER_V1, s_host.lua.pushinteger);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHSTRING_V1, s_host.lua.pushstring);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHLIGHTUSERDATA_V1, s_host.lua.pushlightuserdata);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHCCLOSURE_V1, s_host.lua.pushcclosure);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_PUSHVALUE_V1, s_host.lua.pushvalue);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_CREATETABLE_V1, s_host.lua.createtable);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_SETFIELD_V1, s_host.lua.setfield);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_REGISTRY_REF_V1, s_host.lua.registry_ref);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_REGISTRY_UNREF_V1, s_host.lua.registry_unref);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_LUA_UPVALUE_INDEX_V1, s_host.lua.upvalue_index);
+
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_OPEN_V1, s_host.ble.open);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_CLOSE_V1, s_host.ble.close);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GAP_SCAN_V1, s_host.ble.gap_scan);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GAP_SCAN_STOP_V1, s_host.ble.gap_scan_stop);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GAP_CONNECT_V1, s_host.ble.gap_connect);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GAP_DISCONNECT_V1, s_host.ble.gap_disconnect);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GAP_PAIR_V1, s_host.ble.gap_pair);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GATTC_DISCOVER_SERVICES_V1,
+                            s_host.ble.gattc_discover_services);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GATTC_DISCOVER_CHARACTERISTICS_V1,
+                            s_host.ble.gattc_discover_characteristics);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GATTC_DISCOVER_DESCRIPTORS_V1,
+                            s_host.ble.gattc_discover_descriptors);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GATTC_READ_V1, s_host.ble.gattc_read);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_GATTC_WRITE_V1, s_host.ble.gattc_write);
+    HIDPAD_RESOLVE_REQUIRED(MODULE_PROC_BLE_EVENT_POLL_V1, s_host.ble.event_poll);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_BLE_GAP_SET_CONNECTION_PARAMS_V1,
+                            s_host.ble.gap_set_connection_params);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_BLE_GAP_FORGET_DEVICE_V1,
+                            s_host.ble.gap_forget_device);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_BLE_GAP_CLEAR_BONDS_V1,
+                            s_host.ble.gap_clear_bonds);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_TASK_CREATE_EX_V1, s_host.task.create_ex);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SYNC_CREATE_COUNTING_V1, s_host.sync.create_counting);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SYNC_CREATE_MUTEX_V1, s_host.sync.create_mutex);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SYNC_TAKE_V1, s_host.sync.take);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SYNC_GIVE_V1, s_host.sync.give);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_SYNC_DESTROY_V1, s_host.sync.destroy);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_RUNTIME_EVENT_POST_V1, s_host.runtime.event_post);
+    HIDPAD_RESOLVE_OPTIONAL(MODULE_PROC_RUNTIME_EVENT_CANCEL_V1, s_host.runtime.event_cancel);
+    return MODULE_OK;
+}
+
+#undef HIDPAD_RESOLVE_OPTIONAL
+#undef HIDPAD_RESOLVE_REQUIRED
 
 void *memset(void *dst, int value, size_t len)
 {
@@ -351,6 +565,16 @@ static const char *profile_text(device_profile_t profile)
     return "hid";
 }
 
+static int parse_profile_text(const char *text, device_profile_t *profile)
+{
+    if (!text || !text[0] || !profile) return 0;
+    if (text_equal(text, "xbox")) *profile = DEVICE_PROFILE_XBOX;
+    else if (text_equal(text, "q36") || text_equal(text, "q36-hid")) *profile = DEVICE_PROFILE_Q36;
+    else if (text_equal(text, "hid")) *profile = DEVICE_PROFILE_HID;
+    else return 0;
+    return 1;
+}
+
 static void mark_dirty(hidpad_instance_t *inst)
 {
     if (!inst) return;
@@ -388,7 +612,6 @@ static void clear_controls(hidpad_instance_t *inst)
     inst->state.lt = 0;
     inst->state.rt = 0;
     inst->state.report_id = 0;
-    inst->state.raw_report_len = 0;
 }
 
 static void reset_gatt(hidpad_instance_t *inst)
@@ -427,15 +650,6 @@ static report_characteristic_t *find_report(hidpad_instance_t *inst, uint16_t va
     return NULL;
 }
 
-static void copy_raw_report(driver_state_t *state, const uint8_t *data, size_t len)
-{
-    size_t i;
-    if (!state) return;
-    if (len > sizeof(state->raw_report)) len = sizeof(state->raw_report);
-    for (i = 0; i < len; ++i) state->raw_report[i] = data[i];
-    state->raw_report_len = (uint16_t)len;
-}
-
 static int bytes_equal(const uint8_t *left, const uint8_t *right, size_t len)
 {
     size_t i;
@@ -468,9 +682,7 @@ static void remember_report(report_characteristic_t *report,
 
 static void apply_decoded(hidpad_instance_t *inst,
                           report_characteristic_t *report,
-                          const hidpad_decoded_report_t *decoded,
-                          const uint8_t *raw,
-                          size_t raw_len)
+                          const hidpad_decoded_report_t *decoded)
 {
     uint32_t old_buttons;
     uint32_t old_raw_buttons;
@@ -508,7 +720,6 @@ static void apply_decoded(hidpad_instance_t *inst,
         }
         inst->state.buttons = inst->game_buttons | inst->consumer_buttons;
         inst->state.report_id = decoded->report_id;
-        copy_raw_report(&inst->state, raw, raw_len);
         if (old_buttons != inst->state.buttons || old_raw_buttons != inst->state.raw_buttons ||
             old_lx != inst->state.lx || old_ly != inst->state.ly ||
             old_rx != inst->state.rx || old_ry != inst->state.ry ||
@@ -550,7 +761,6 @@ static void apply_decoded(hidpad_instance_t *inst,
     if ((decoded->valid_mask & HIDPAD_VALID_RT) != 0) inst->state.rt = decoded->rt;
     inst->state.buttons = inst->game_buttons | inst->consumer_buttons;
     inst->state.report_id = decoded->report_id;
-    copy_raw_report(&inst->state, raw, raw_len);
     if (old_buttons != inst->state.buttons || old_raw_buttons != inst->state.raw_buttons ||
         old_lx != inst->state.lx || old_ly != inst->state.ly ||
         old_rx != inst->state.rx || old_ry != inst->state.ry ||
@@ -615,7 +825,7 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
     decoded = &inst->decoded_work;
     if (inst->profile == DEVICE_PROFILE_XBOX && decode_xbox(decoded, data, len)) {
         decoded->report_id = report_id;
-        apply_decoded(inst, report, decoded, data, len);
+        apply_decoded(inst, report, decoded);
         remember_report(report, data, len, 1);
         return 1;
     }
@@ -623,12 +833,11 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
     if (profile == HIDPAD_PROFILE_Q36 && !inst->parser.has_report_id) report_id = 0;
     decoded_ok = hidpad_parser_decode(&inst->parser, report_id, data, len, profile, decoded);
     if (!decoded_ok) {
-        copy_raw_report(&inst->state, data, len);
         inst->state.report_id = report_id;
         remember_report(report, data, len, 0);
         return 0;
     }
-    apply_decoded(inst, report, decoded, data, len);
+    apply_decoded(inst, report, decoded);
     remember_report(report, data, len, 1);
     return 1;
 }
@@ -671,12 +880,14 @@ static int score_advertisement(const advertisement_t *adv, device_profile_t *pro
         return 240;
     }
     if (adv->has_hid || text_contains(adv->name, "q36") ||
+        text_contains(adv->name, "q34") ||
         text_contains(adv->name, "shanwan")) {
         *profile = DEVICE_PROFILE_Q36;
     } else {
         *profile = DEVICE_PROFILE_HID;
     }
-    if (text_contains(adv->name, "q36") || text_contains(adv->name, "shanwan")) score += 100;
+    if (text_contains(adv->name, "q36") || text_contains(adv->name, "q34") ||
+        text_contains(adv->name, "shanwan")) score += 100;
     if (adv->has_hid) score += 100;
     if (adv->appearance == 0x03c4 || adv->appearance == 0x03c3) score += 80;
     if (text_contains(adv->name, "gamepad") || text_contains(adv->name, "controller") ||
@@ -692,7 +903,7 @@ static int start_scan(hidpad_instance_t *inst)
     module_ble_scan_config_t *scan;
     int32_t err;
     if (!inst || !inst->started || !inst->host->ble.gap_scan) return 0;
-    scan = &inst->scan_work;
+    scan = &inst->cold->scan_work;
     zero_bytes(scan, sizeof(*scan));
     scan->size = sizeof(*scan);
     scan->duration_ms = inst->manual_scan || inst->scan_ms <= 3000u ? inst->scan_ms : 3000u;
@@ -782,6 +993,7 @@ static void finish_subscribe(hidpad_instance_t *inst)
         return;
     }
     inst->phase = PHASE_READY;
+    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     if (inst->host->ble.gap_set_connection_params) {
         (void)inst->host->ble.gap_set_connection_params(
             inst->session, inst->conn_handle,
@@ -893,23 +1105,24 @@ static discovered_device_t *remember_device(hidpad_instance_t *inst,
     uint8_t i;
     if (!inst || !event || !adv) return NULL;
     for (i = 0; i < inst->scan_result_count; ++i) {
-        if (text_equal(inst->scan_results[i].address, event->address)) {
-            device = &inst->scan_results[i];
+        if (text_equal(inst->cold->scan_results[i].address, event->address)) {
+            device = &inst->cold->scan_results[i];
             break;
         }
     }
     if (!device && inst->scan_result_count < HIDPAD_MAX_SCAN_RESULTS) {
-        device = &inst->scan_results[inst->scan_result_count++];
+        device = &inst->cold->scan_results[inst->scan_result_count++];
         zero_bytes(device, sizeof(*device));
     }
     if (!device && inst->scan_result_count == HIDPAD_MAX_SCAN_RESULTS) {
         uint8_t weakest = 0;
         for (i = 1; i < HIDPAD_MAX_SCAN_RESULTS; ++i) {
-            if (inst->scan_results[i].score < inst->scan_results[weakest].score) weakest = i;
+            if (inst->cold->scan_results[i].score < inst->cold->scan_results[weakest].score) weakest = i;
         }
-        if ((inst->preferred_address[0] && text_equal(inst->preferred_address, event->address)) ||
-            score > inst->scan_results[weakest].score) {
-            device = &inst->scan_results[weakest];
+        if ((inst->cold->preferred_address[0] &&
+             text_equal(inst->cold->preferred_address, event->address)) ||
+            score > inst->cold->scan_results[weakest].score) {
+            device = &inst->cold->scan_results[weakest];
             zero_bytes(device, sizeof(*device));
         }
     }
@@ -931,22 +1144,21 @@ static discovered_device_t *remember_device(hidpad_instance_t *inst,
     return device;
 }
 
-static int connect_device(hidpad_instance_t *inst, const discovered_device_t *device)
+static int connect_peer(hidpad_instance_t *inst, uint8_t addr_type, const char *address,
+                        const char *name, device_profile_t profile, uint32_t timeout_ms)
 {
     int32_t err;
-    if (!inst || !device) return 0;
+    if (!inst || !address || !address[0]) return 0;
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     inst->scan_active = 0;
-    inst->profile = (device_profile_t)device->profile;
-    inst->peer_addr_type = device->addr_type;
-    copy_text(inst->state.address, sizeof(inst->state.address),
-              device->address, strlen(device->address));
-    copy_text(inst->state.name, sizeof(inst->state.name), device->name, strlen(device->name));
+    inst->profile = profile;
+    inst->peer_addr_type = addr_type;
+    copy_text(inst->state.address, sizeof(inst->state.address), address, strlen(address));
+    copy_text(inst->state.name, sizeof(inst->state.name), name, strlen(name));
     inst->state.connecting = 1;
     inst->phase = PHASE_CONNECTING;
     mark_status_dirty(inst);
-    err = inst->host->ble.gap_connect(inst->session, device->addr_type,
-                                     device->address, 15000);
+    err = inst->host->ble.gap_connect(inst->session, addr_type, address, timeout_ms);
     if (err != MODULE_OK) {
         inst->state.connecting = 0;
         inst->phase = inst->manual_scan ? PHASE_SELECT_DEVICE : PHASE_WAIT_RESCAN;
@@ -957,6 +1169,34 @@ static int connect_device(hidpad_instance_t *inst, const discovered_device_t *de
     return 1;
 }
 
+static int should_auto_connect(const hidpad_instance_t *inst,
+                               const discovered_device_t *device)
+{
+    if (!inst || !device) return 0;
+    if (inst->cold->preferred_address[0] &&
+        text_equal(inst->cold->preferred_address, device->address)) return 1;
+    return text_contains(device->name, "xbox") ||
+           text_contains(device->name, "q36") ||
+           text_contains(device->name, "q34");
+}
+
+static int connect_device(hidpad_instance_t *inst, const discovered_device_t *device)
+{
+    int connected;
+    if (!inst || !device) return 0;
+    connected = connect_peer(inst, device->addr_type, device->address, device->name,
+                             (device_profile_t)device->profile, 15000u);
+    if (connected && inst->cold->preferred_address[0] &&
+        text_equal(inst->cold->preferred_address, device->address)) {
+        inst->cold->preferred_addr_type = device->addr_type;
+        inst->cold->preferred_profile = (device_profile_t)device->profile;
+        copy_text(inst->cold->preferred_name, sizeof(inst->cold->preferred_name),
+                  device->name, strlen(device->name));
+        inst->cold->preferred_metadata_valid = 1;
+    }
+    return connected;
+}
+
 static void handle_scan_result(hidpad_instance_t *inst, const module_ble_event_t *event)
 {
     advertisement_t *adv;
@@ -964,25 +1204,24 @@ static void handle_scan_result(hidpad_instance_t *inst, const module_ble_event_t
     device_profile_t profile = DEVICE_PROFILE_HID;
     int score;
     uint8_t i;
-    if (!inst->scan_active || inst->state.connected || inst->state.connecting) return;
-    if (!inst->manual_scan && inst->preferred_address[0] &&
-        !text_equal(inst->preferred_address, event->address)) return;
+    if (!inst->scan_active || inst->state.connecting) return;
     for (i = 0; i < inst->scan_result_count; ++i) {
-        if (!text_equal(inst->scan_results[i].address, event->address)) continue;
-        inst->scan_results[i].rssi = event->rssi;
-        if (!inst->manual_scan && !connect_device(inst, &inst->scan_results[i])) {
+        if (!text_equal(inst->cold->scan_results[i].address, event->address)) continue;
+        inst->cold->scan_results[i].rssi = event->rssi;
+        if (inst->state.connected) return;
+        if (should_auto_connect(inst, &inst->cold->scan_results[i]) &&
+            !connect_device(inst, &inst->cold->scan_results[i])) {
             schedule_rescan_with_backoff(inst);
         }
         return;
     }
-    adv = &inst->advertisement_work;
+    adv = &inst->cold->advertisement_work;
     parse_advertisement(event->data, event->data_len, adv);
     score = score_advertisement(adv, &profile);
     if (score < 40) return;
     device = remember_device(inst, event, adv, profile, score);
-    if (!device || inst->manual_scan) return;
-    if (inst->preferred_address[0] &&
-        !text_equal(inst->preferred_address, device->address)) return;
+    if (inst->state.connected) return;
+    if (!device || !should_auto_connect(inst, device)) return;
     if (!connect_device(inst, device)) schedule_rescan_with_backoff(inst);
 }
 
@@ -1033,8 +1272,6 @@ static void handle_connected(hidpad_instance_t *inst, const module_ble_event_t *
     inst->conn_handle = event->conn_handle;
     inst->state.connected = 1;
     inst->state.connecting = 0;
-    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
-    inst->pair_requested = 1;
     reset_gatt(inst);
     inst->phase = PHASE_PAIRING;
     mark_status_dirty(inst);
@@ -1066,6 +1303,7 @@ static const char *pairing_disconnect_error(uint16_t reason)
 static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_t *event)
 {
     int pairing = inst->phase == PHASE_PAIRING;
+    int was_ready = inst->phase == PHASE_READY;
     int32_t forget_err = MODULE_OK;
     inst->state.disconnect_reason = event ? event->status : 0;
     if (pairing) inst->last_error = pairing_disconnect_error(inst->state.disconnect_reason);
@@ -1073,8 +1311,6 @@ static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_
     inst->state.connected = 0;
     inst->state.connecting = 0;
     inst->state.encrypted = 0;
-    inst->pair_requested = 0;
-    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     clear_controls(inst);
     reset_gatt(inst);
     if (inst->forget_pending) {
@@ -1096,7 +1332,12 @@ static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_
             inst->last_error = "Failed to forget controller bond";
         }
     }
-    schedule_rescan(inst, inst->manual_scan ? 0 : 1200);
+    inst->direct_reconnect_pending = !inst->manual_scan && !inst->force_scan_once && was_ready &&
+                                     inst->cold->preferred_metadata_valid;
+    inst->force_scan_once = 0;
+    if (inst->manual_scan) schedule_rescan(inst, 0);
+    else if (was_ready) schedule_rescan(inst, 1200);
+    else schedule_rescan_with_backoff(inst);
 }
 
 static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *event)
@@ -1108,7 +1349,11 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         break;
     case MODULE_BLE_IRQ_SCAN_DONE:
         inst->scan_active = 0;
-        if (!inst->state.connected && !inst->state.connecting) {
+        if (inst->state.connected) {
+            inst->manual_scan = 0;
+            inst->phase = PHASE_READY;
+            mark_status_dirty(inst);
+        } else if (!inst->state.connecting) {
             if (inst->manual_scan) {
                 inst->phase = PHASE_SELECT_DEVICE;
                 mark_status_dirty(inst);
@@ -1329,10 +1574,279 @@ static void driver_poll(hidpad_instance_t *inst)
     }
     if (inst->phase == PHASE_WAIT_RESCAN && !inst->state.connected && !inst->state.connecting &&
         (int32_t)(now_ms(inst) - inst->next_scan_ms) >= 0) {
+        inst->direct_reconnect_pending = 0;
         start_scan(inst);
     }
     poll_input_fallback(inst);
     poll_keepalive(inst);
+}
+
+static int driver_start(hidpad_instance_t *inst);
+static void driver_stop(hidpad_instance_t *inst);
+
+static int runtime_event_mode_supported(const hidpad_instance_t *inst)
+{
+    return inst && inst->host->runtime.event_post && inst->host->runtime.event_cancel &&
+           inst->host->task.create_ex && inst->host->sync.create_counting &&
+           inst->host->sync.create_mutex && inst->host->sync.take &&
+           inst->host->sync.give && inst->host->sync.destroy;
+}
+
+static int instance_lock(hidpad_instance_t *inst, uint32_t timeout_ms)
+{
+    if (!inst || !inst->worker_mutex) return 1;
+    return inst->host->sync.take(inst->worker_mutex, timeout_ms) == MODULE_OK;
+}
+
+static void instance_unlock(hidpad_instance_t *inst)
+{
+    if (inst && inst->worker_mutex) (void)inst->host->sync.give(inst->worker_mutex);
+}
+
+static void post_lua_event(hidpad_instance_t *inst)
+{
+    if (!inst || !inst->lua || inst->event_ref <= -1 || !inst->host->runtime.event_post) return;
+    (void)inst->host->runtime.event_post(inst->lua, inst->event_ref);
+}
+
+static void worker_command_failed(hidpad_instance_t *inst, const char *error)
+{
+    inst->last_error = error;
+    mark_status_dirty(inst);
+}
+
+static void execute_worker_command(hidpad_instance_t *inst, worker_command_t command,
+                                   const char *address)
+{
+    uint8_t i;
+    int32_t err;
+    if (!inst || command == WORKER_COMMAND_NONE) return;
+    switch (command) {
+    case WORKER_COMMAND_RESCAN:
+        if (!inst->started || inst->state.connecting) {
+            worker_command_failed(inst, "rescan rejected while driver is busy");
+            break;
+        }
+        inst->manual_scan = 0;
+        inst->direct_reconnect_pending = 0;
+        inst->force_scan_once = 1;
+        inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
+        if (inst->scan_active) (void)inst->host->ble.gap_scan_stop(inst->session);
+        if (inst->state.connected && inst->conn_handle != 0xffff) {
+            (void)inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+        } else {
+            inst->state.connecting = 0;
+            schedule_rescan(inst, 0);
+        }
+        break;
+    case WORKER_COMMAND_SCAN:
+        if (!inst->started || inst->state.connecting) {
+            worker_command_failed(inst, "scan rejected while driver is busy");
+            break;
+        }
+        if (inst->scan_active) (void)inst->host->ble.gap_scan_stop(inst->session);
+        inst->scan_active = 0;
+        inst->manual_scan = 1;
+        inst->direct_reconnect_pending = 0;
+        inst->force_scan_once = 1;
+        inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
+        inst->scan_result_count = 0;
+        zero_bytes(inst->cold->scan_results, sizeof(inst->cold->scan_results));
+        if (!start_scan(inst)) {
+            inst->manual_scan = 0;
+            worker_command_failed(inst, "scan start failed");
+        }
+        break;
+    case WORKER_COMMAND_CONNECT:
+        if (!inst->started || inst->state.connected || inst->state.connecting) {
+            worker_command_failed(inst, "connect rejected while driver is busy");
+            break;
+        }
+        for (i = 0; i < inst->scan_result_count; ++i) {
+            if (text_equal(inst->cold->scan_results[i].address, address)) {
+                copy_text(inst->cold->preferred_address, sizeof(inst->cold->preferred_address),
+                          address, strlen(address));
+                if (!connect_device(inst, &inst->cold->scan_results[i])) {
+                    worker_command_failed(inst, "connect failed");
+                }
+                return;
+            }
+        }
+        worker_command_failed(inst, "selected device is no longer available");
+        break;
+    case WORKER_COMMAND_DISCONNECT:
+        if (!inst->state.connected || inst->conn_handle == 0xffff ||
+            inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
+            worker_command_failed(inst, "disconnect failed");
+        }
+        break;
+    case WORKER_COMMAND_PAIR:
+        if (!inst->state.connected || inst->conn_handle == 0xffff ||
+            inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK) {
+            worker_command_failed(inst, "pair failed");
+        }
+        break;
+    case WORKER_COMMAND_FORGET:
+        if (!inst->started || !inst->host->ble.gap_forget_device) {
+            worker_command_failed(inst, "forget controller is unsupported");
+            break;
+        }
+        if (!inst->state.address[0]) {
+            if (!inst->host->ble.gap_clear_bonds) {
+                worker_command_failed(inst, "controller address is missing");
+                break;
+            }
+            if (inst->scan_active) {
+                (void)inst->host->ble.gap_scan_stop(inst->session);
+                inst->scan_active = 0;
+            }
+            err = inst->host->ble.gap_clear_bonds(inst->session);
+            if (err != MODULE_OK && err != MODULE_ERR_NOT_FOUND) {
+                worker_command_failed(inst, "clear controller bonds failed");
+                break;
+            }
+            inst->last_error = NULL;
+            inst->state.disconnect_reason = 0;
+            schedule_rescan(inst, 0);
+            break;
+        }
+        if (inst->state.connected && inst->conn_handle != 0xffff) {
+            inst->forget_pending = 1;
+            if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
+                inst->forget_pending = 0;
+                worker_command_failed(inst, "disconnect before forgetting bond failed");
+            }
+            break;
+        }
+        if (inst->scan_active) {
+            (void)inst->host->ble.gap_scan_stop(inst->session);
+            inst->scan_active = 0;
+        }
+        err = inst->host->ble.gap_forget_device(
+            inst->session, inst->peer_addr_type, inst->state.address);
+        if (err == MODULE_ERR_NOT_FOUND && inst->host->ble.gap_clear_bonds) {
+            err = inst->host->ble.gap_clear_bonds(inst->session);
+            if (err == MODULE_ERR_NOT_FOUND) err = MODULE_OK;
+        }
+        if (err != MODULE_OK) {
+            worker_command_failed(inst, "forget controller bond failed");
+            break;
+        }
+        inst->last_error = NULL;
+        inst->state.disconnect_reason = 0;
+        schedule_rescan(inst, 0);
+        break;
+    default:
+        break;
+    }
+}
+
+static int32_t queue_worker_command(hidpad_instance_t *inst, worker_command_t command,
+                                    const char *address)
+{
+    if (!inst || !inst->worker_running) return MODULE_ERR_BAD_STATE;
+    if (!instance_lock(inst, 1000)) return MODULE_ERR_BUSY;
+    if (inst->worker_command != WORKER_COMMAND_NONE) {
+        instance_unlock(inst);
+        return MODULE_ERR_BUSY;
+    }
+    inst->worker_command = command;
+    copy_text(inst->worker_command_address, sizeof(inst->worker_command_address),
+              address ? address : "", address ? strlen(address) : 0);
+    instance_unlock(inst);
+    (void)inst->host->sync.give(inst->worker_wake);
+    return MODULE_OK;
+}
+
+static void worker_main(void *arg)
+{
+    hidpad_instance_t *inst = (hidpad_instance_t *)arg;
+    uint32_t wait_ms = 10;
+    int should_post = 0;
+    if (!inst) return;
+
+    if (instance_lock(inst, 1000)) {
+        if (driver_start(inst) != MODULE_OK) mark_status_dirty(inst);
+        should_post = inst->state_dirty != 0;
+        instance_unlock(inst);
+    }
+    if (should_post) post_lua_event(inst);
+
+    while (!inst->worker_stop) {
+        if (instance_lock(inst, 1000)) {
+            worker_command_t command = inst->worker_command;
+            char address[18];
+            copy_text(address, sizeof(address), inst->worker_command_address,
+                      strlen(inst->worker_command_address));
+            inst->worker_command = WORKER_COMMAND_NONE;
+            inst->worker_command_address[0] = 0;
+            execute_worker_command(inst, command, address);
+            driver_poll(inst);
+            should_post = inst->state_dirty != 0;
+            wait_ms = inst->phase == PHASE_READY ? 10u :
+                      (inst->phase == PHASE_SCANNING ? 20u : 50u);
+            instance_unlock(inst);
+        }
+        if (should_post) post_lua_event(inst);
+        should_post = 0;
+        if (inst->worker_stop) break;
+        (void)inst->host->sync.take(inst->worker_wake, wait_ms);
+    }
+
+    if (instance_lock(inst, 1000)) {
+        driver_stop(inst);
+        should_post = inst->state_dirty != 0;
+        instance_unlock(inst);
+    }
+    if (should_post) post_lua_event(inst);
+    inst->worker_task = NULL;
+    inst->worker_running = 0;
+    (void)inst->host->sync.give(inst->worker_stopped);
+}
+
+static void destroy_worker_sync(hidpad_instance_t *inst)
+{
+    if (!inst || !inst->host->sync.destroy) return;
+    if (inst->worker_stopped) inst->host->sync.destroy(inst->worker_stopped);
+    if (inst->worker_wake) inst->host->sync.destroy(inst->worker_wake);
+    if (inst->worker_mutex) inst->host->sync.destroy(inst->worker_mutex);
+    inst->worker_stopped = NULL;
+    inst->worker_wake = NULL;
+    inst->worker_mutex = NULL;
+}
+
+static int32_t start_worker(hidpad_instance_t *inst)
+{
+    int32_t err;
+    if (!inst || !runtime_event_mode_supported(inst)) return MODULE_ERR_UNSUPPORTED;
+    if (inst->worker_running) return MODULE_OK;
+    destroy_worker_sync(inst);
+    err = inst->host->sync.create_mutex(&inst->worker_mutex);
+    if (err != MODULE_OK) goto failed;
+    err = inst->host->sync.create_counting(1, 0, &inst->worker_wake);
+    if (err != MODULE_OK) goto failed;
+    err = inst->host->sync.create_counting(1, 0, &inst->worker_stopped);
+    if (err != MODULE_OK) goto failed;
+    inst->worker_stop = 0;
+    inst->worker_running = 1;
+    err = inst->host->task.create_ex(
+        "hidpad_worker", worker_main, inst, HIDPAD_WORKER_STACK_BYTES,
+        HIDPAD_WORKER_PRIORITY, HIDPAD_WORKER_CORE,
+        MODULE_HEAP_PSRAM | MODULE_HEAP_8BIT, &inst->worker_task);
+    if (err == MODULE_OK) return MODULE_OK;
+    inst->worker_running = 0;
+failed:
+    destroy_worker_sync(inst);
+    return err;
+}
+
+static void stop_worker(hidpad_instance_t *inst)
+{
+    if (!inst || !inst->worker_running) return;
+    inst->worker_stop = 1;
+    (void)inst->host->sync.give(inst->worker_wake);
+    (void)inst->host->sync.take(inst->worker_stopped, MODULE_WAIT_FOREVER);
+    destroy_worker_sync(inst);
 }
 
 static int driver_start(hidpad_instance_t *inst)
@@ -1341,10 +1855,12 @@ static int driver_start(hidpad_instance_t *inst)
     int32_t err;
     if (!inst) return MODULE_ERR_INVALID_ARG;
     if (inst->started) return MODULE_OK;
-    config = &inst->config_work;
+    config = &inst->cold->config_work;
     zero_bytes(config, sizeof(*config));
     config->size = sizeof(*config);
     config->mtu = 185;
+    /* Keep the legacy host buffer request: deployed firmware versions may
+     * still use this field even though newer hosts no longer depend on it. */
     config->rxbuf = 2048;
     config->bond = 1;
     config->mitm = 0;
@@ -1364,9 +1880,12 @@ static int driver_start(hidpad_instance_t *inst)
     inst->last_error = NULL;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->keepalive_count = 0;
+    inst->direct_reconnect_pending = 0;
+    inst->force_scan_once = 0;
     clear_controls(inst);
     reset_gatt(inst);
-    /* start_scan schedules a retry on transient host errors. */
+    /* Always rediscover before connecting. This keeps GATT initialization in
+     * the same, reliable order for controllers such as Q34/Q36. */
     start_scan(inst);
     return MODULE_OK;
 }
@@ -1382,6 +1901,8 @@ static void driver_stop(hidpad_instance_t *inst)
     inst->session = 0;
     inst->started = 0;
     inst->scan_active = 0;
+    inst->direct_reconnect_pending = 0;
+    inst->force_scan_once = 0;
     inst->state.connected = 0;
     inst->state.connecting = 0;
     inst->phase = PHASE_STOPPED;
@@ -1389,84 +1910,96 @@ static void driver_stop(hidpad_instance_t *inst)
     mark_status_dirty(inst);
 }
 
-static void set_integer_field(lua_State *L, const module_host_api_v2 *host,
-                              const char *name, int64_t value)
+static void set_integer_at(lua_State *L, const hidpad_host_api_t *host, int table_index,
+                           const char *name, int64_t value)
 {
     host->lua.pushinteger(L, value);
-    host->lua.setfield(L, -2, name);
+    host->lua.setfield(L, table_index, name);
 }
 
-static void set_boolean_field(lua_State *L, const module_host_api_v2 *host,
-                              const char *name, int value)
+static void set_boolean_at(lua_State *L, const hidpad_host_api_t *host, int table_index,
+                           const char *name, int value)
 {
     host->lua.pushboolean(L, value);
-    host->lua.setfield(L, -2, name);
+    host->lua.setfield(L, table_index, name);
 }
 
-static void set_string_field(lua_State *L, const module_host_api_v2 *host,
-                             const char *name, const char *value)
+static void set_string_at(lua_State *L, const hidpad_host_api_t *host, int table_index,
+                          const char *name, const char *value)
 {
     host->lua.pushstring(L, value ? value : "");
-    host->lua.setfield(L, -2, name);
+    host->lua.setfield(L, table_index, name);
+}
+
+static void set_integer_field(lua_State *L, const hidpad_host_api_t *host,
+                              const char *name, int64_t value)
+{
+    set_integer_at(L, host, -2, name, value);
+}
+
+static void set_string_field(lua_State *L, const hidpad_host_api_t *host,
+                             const char *name, const char *value)
+{
+    set_string_at(L, host, -2, name, value);
+}
+
+static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_index)
+{
+    const hidpad_host_api_t *host = inst->host;
+    set_integer_at(L, host, table_index, "seq", inst->state.seq);
+    set_integer_at(L, host, table_index, "timestamp_ms", inst->state.timestamp_ms);
+    set_integer_at(L, host, table_index, "buttons", inst->state.buttons);
+    set_integer_at(L, host, table_index, "raw_buttons", inst->state.raw_buttons);
+    set_integer_at(L, host, table_index, "lx", inst->state.lx);
+    set_integer_at(L, host, table_index, "ly", inst->state.ly);
+    set_integer_at(L, host, table_index, "rx", inst->state.rx);
+    set_integer_at(L, host, table_index, "ry", inst->state.ry);
+    set_integer_at(L, host, table_index, "lt", inst->state.lt);
+    set_integer_at(L, host, table_index, "rt", inst->state.rt);
+    set_integer_at(L, host, table_index, "report_id", inst->state.report_id);
+}
+
+static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)
+{
+    const hidpad_host_api_t *host = inst->host;
+    fill_input_state(L, inst, table_index);
+    set_boolean_at(L, host, table_index, "started", inst->started);
+    set_boolean_at(L, host, table_index, "connected", inst->state.connected);
+    set_boolean_at(L, host, table_index, "connecting", inst->state.connecting);
+    set_boolean_at(L, host, table_index, "encrypted", inst->state.encrypted);
+    set_integer_at(L, host, table_index, "disconnect_reason", inst->state.disconnect_reason);
+    set_boolean_at(L, host, table_index, "manual_scan", inst->manual_scan);
+    set_integer_at(L, host, table_index, "scan_count", inst->scan_result_count);
+    set_integer_at(L, host, table_index, "keepalive_count", inst->keepalive_count);
+    set_boolean_at(L, host, table_index, "keepalive_supported",
+                   inst->control_point_handle != 0);
+    set_string_at(L, host, table_index, "phase", phase_text(inst->phase));
+    set_string_at(L, host, table_index, "profile", profile_text(inst->profile));
+    set_string_at(L, host, table_index, "address", inst->state.address);
+    set_string_at(L, host, table_index, "name", inst->state.name);
+    set_integer_at(L, host, table_index, "addr_type", inst->peer_addr_type);
+    set_string_at(L, host, table_index, "last_error", inst->last_error);
 }
 
 static void push_state(lua_State *L, hidpad_instance_t *inst)
 {
-    const module_host_api_v2 *host = inst->host;
-    host->lua.createtable(L, 0, 27);
-    set_integer_field(L, host, "seq", inst->state.seq);
-    set_integer_field(L, host, "timestamp_ms", inst->state.timestamp_ms);
-    set_integer_field(L, host, "buttons", inst->state.buttons);
-    set_integer_field(L, host, "raw_buttons", inst->state.raw_buttons);
-    set_integer_field(L, host, "lx", inst->state.lx);
-    set_integer_field(L, host, "ly", inst->state.ly);
-    set_integer_field(L, host, "rx", inst->state.rx);
-    set_integer_field(L, host, "ry", inst->state.ry);
-    set_integer_field(L, host, "lt", inst->state.lt);
-    set_integer_field(L, host, "rt", inst->state.rt);
-    set_integer_field(L, host, "report_id", inst->state.report_id);
-    set_boolean_field(L, host, "started", inst->started);
-    set_boolean_field(L, host, "connected", inst->state.connected);
-    set_boolean_field(L, host, "connecting", inst->state.connecting);
-    set_boolean_field(L, host, "encrypted", inst->state.encrypted);
-    set_integer_field(L, host, "disconnect_reason", inst->state.disconnect_reason);
-    set_boolean_field(L, host, "manual_scan", inst->manual_scan);
-    set_integer_field(L, host, "scan_count", inst->scan_result_count);
-    set_integer_field(L, host, "keepalive_count", inst->keepalive_count);
-    set_boolean_field(L, host, "keepalive_supported", inst->control_point_handle != 0);
-    set_string_field(L, host, "phase", phase_text(inst->phase));
-    set_string_field(L, host, "profile", profile_text(inst->profile));
-    set_string_field(L, host, "address", inst->state.address);
-    set_string_field(L, host, "name", inst->state.name);
-    set_string_field(L, host, "last_error", inst->last_error);
-    host->lua.pushlstring(L, (const char *)inst->state.raw_report, inst->state.raw_report_len);
-    host->lua.setfield(L, -2, "raw_report");
+    inst->host->lua.createtable(L, 0, 27);
+    fill_state(L, inst, -2);
 }
 
 static void push_input_state(lua_State *L, hidpad_instance_t *inst)
 {
-    const module_host_api_v2 *host = inst->host;
-    host->lua.createtable(L, 0, 11);
-    set_integer_field(L, host, "seq", inst->state.seq);
-    set_integer_field(L, host, "timestamp_ms", inst->state.timestamp_ms);
-    set_integer_field(L, host, "buttons", inst->state.buttons);
-    set_integer_field(L, host, "raw_buttons", inst->state.raw_buttons);
-    set_integer_field(L, host, "lx", inst->state.lx);
-    set_integer_field(L, host, "ly", inst->state.ly);
-    set_integer_field(L, host, "rx", inst->state.rx);
-    set_integer_field(L, host, "ry", inst->state.ry);
-    set_integer_field(L, host, "lt", inst->state.lt);
-    set_integer_field(L, host, "rt", inst->state.rt);
-    set_integer_field(L, host, "report_id", inst->state.report_id);
+    inst->host->lua.createtable(L, 0, 11);
+    fill_input_state(L, inst, -2);
 }
 
-static hidpad_instance_t *lua_instance(lua_State *L, const module_host_api_v2 *host)
+static hidpad_instance_t *lua_instance(lua_State *L, const hidpad_host_api_t *host)
 {
     int index = host->lua.upvalue_index(1);
     return (hidpad_instance_t *)host->lua.touserdata(L, index);
 }
 
-static int push_error(lua_State *L, const module_host_api_v2 *host, const char *error)
+static int push_error(lua_State *L, const hidpad_host_api_t *host, const char *error)
 {
     host->lua.pushnil(L);
     host->lua.pushstring(L, error ? error : "hidpad error");
@@ -1481,7 +2014,12 @@ static int l_start(lua_State *L)
         int64_t scan_ms = s_host.lua.tointeger(L, 1);
         if (scan_ms >= 1000 && scan_ms <= 60000) inst->scan_ms = (uint32_t)scan_ms;
     }
-    if (driver_start(inst) != MODULE_OK) return push_error(L, &s_host, inst->last_error);
+    if (runtime_event_mode_supported(inst)) {
+        int32_t err = start_worker(inst);
+        if (err != MODULE_OK) return push_error(L, &s_host, "hidpad worker start failed");
+    } else if (driver_start(inst) != MODULE_OK) {
+        return push_error(L, &s_host, inst->last_error);
+    }
     s_host.lua.pushboolean(L, 1);
     return 1;
 }
@@ -1489,19 +2027,59 @@ static int l_start(lua_State *L)
 static int l_poll(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
+    int target_table;
+    int status_update;
     if (!inst) return push_error(L, &s_host, "hidpad instance missing");
-    driver_poll(inst);
+    target_table = s_host.lua.gettop(L) >= 1 && s_host.lua.istable(L, 1);
+    if (runtime_event_mode_supported(inst)) {
+        if (!instance_lock(inst, 1000)) return push_error(L, &s_host, "hidpad state is busy");
+    } else {
+        driver_poll(inst);
+    }
     if (!inst->state_dirty) {
+        if (runtime_event_mode_supported(inst)) instance_unlock(inst);
         s_host.lua.pushnil(L);
         return 1;
     }
     inst->state_dirty = 0;
-    if (inst->status_dirty) {
+    status_update = inst->status_dirty != 0;
+    if (status_update) {
         inst->status_dirty = 0;
-        push_state(L, inst);
+        if (target_table) fill_state(L, inst, 1);
+        else push_state(L, inst);
     } else {
-        push_input_state(L, inst);
+        if (target_table) fill_input_state(L, inst, 1);
+        else push_input_state(L, inst);
     }
+    if (target_table) s_host.lua.pushvalue(L, 1);
+    s_host.lua.pushboolean(L, status_update);
+    if (runtime_event_mode_supported(inst)) instance_unlock(inst);
+    return 2;
+}
+
+static int l_on_event(lua_State *L)
+{
+    hidpad_instance_t *inst = lua_instance(L, &s_host);
+    if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (!runtime_event_mode_supported(inst)) {
+        s_host.lua.pushboolean(L, 0);
+        return 1;
+    }
+    if (inst->worker_running) {
+        return push_error(L, &s_host, "cannot replace event callback while hidpad is running");
+    }
+    if (inst->event_ref > -1) {
+        inst->host->runtime.event_cancel(inst->lua, inst->event_ref);
+        inst->host->lua.registry_unref(inst->lua, inst->event_ref);
+        inst->event_ref = -2;
+    }
+    if (inst->host->lua.gettop(L) < 1 || inst->host->lua.isnil(L, 1)) {
+        inst->host->lua.pushboolean(L, 1);
+        return 1;
+    }
+    inst->host->lua.pushvalue(L, 1);
+    inst->event_ref = inst->host->lua.registry_ref(L);
+    inst->host->lua.pushboolean(L, inst->event_ref > -1);
     return 1;
 }
 
@@ -1509,16 +2087,29 @@ static int l_state(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (runtime_event_mode_supported(inst) && !instance_lock(inst, 1000)) {
+        return push_error(L, &s_host, "hidpad state is busy");
+    }
     push_state(L, inst);
+    if (runtime_event_mode_supported(inst)) instance_unlock(inst);
     return 1;
 }
 
 static int l_rescan(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_RESCAN, NULL) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
     if (inst->state.connecting) return push_error(L, &s_host, "connection is still in progress");
     inst->manual_scan = 0;
+    inst->direct_reconnect_pending = 0;
+    inst->force_scan_once = 1;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     if (inst->state.connected && inst->conn_handle != 0xffff) {
@@ -1534,21 +2125,26 @@ static int l_rescan(lua_State *L)
 static int l_scan(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_SCAN, NULL) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
     if (inst->state.connecting) return push_error(L, &s_host, "connection is still in progress");
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     inst->scan_active = 0;
     inst->manual_scan = 1;
+    inst->direct_reconnect_pending = 0;
+    inst->force_scan_once = 1;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->scan_result_count = 0;
-    zero_bytes(inst->scan_results, sizeof(inst->scan_results));
-    if (inst->state.connected && inst->conn_handle != 0xffff) {
-        if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
-            inst->manual_scan = 0;
-            return push_error(L, &s_host, "disconnect before scan failed");
-        }
-    } else {
-        schedule_rescan(inst, 0);
+    zero_bytes(inst->cold->scan_results, sizeof(inst->cold->scan_results));
+    if (!start_scan(inst)) {
+        inst->manual_scan = 0;
+        return push_error(L, &s_host, "scan start failed");
     }
     s_host.lua.pushboolean(L, 1);
     return 1;
@@ -1558,7 +2154,11 @@ static int l_scan_count(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (runtime_event_mode_supported(inst) && !instance_lock(inst, 1000)) {
+        return push_error(L, &s_host, "hidpad state is busy");
+    }
     s_host.lua.pushinteger(L, inst->scan_result_count);
+    if (runtime_event_mode_supported(inst)) instance_unlock(inst);
     return 1;
 }
 
@@ -1572,17 +2172,22 @@ static int l_scan_device(lua_State *L)
         return push_error(L, &s_host, "device index missing");
     }
     requested = s_host.lua.tointeger(L, 1);
+    if (runtime_event_mode_supported(inst) && !instance_lock(inst, 1000)) {
+        return push_error(L, &s_host, "hidpad state is busy");
+    }
     if (requested < 1 || requested > inst->scan_result_count) {
+        if (runtime_event_mode_supported(inst)) instance_unlock(inst);
         s_host.lua.pushnil(L);
         return 1;
     }
-    device = &inst->scan_results[(uint8_t)requested - 1u];
+    device = &inst->cold->scan_results[(uint8_t)requested - 1u];
     s_host.lua.createtable(L, 0, 6);
     set_string_field(L, &s_host, "address", device->address);
     set_string_field(L, &s_host, "name", device->name);
     set_string_field(L, &s_host, "profile", profile_text((device_profile_t)device->profile));
     set_integer_field(L, &s_host, "rssi", device->rssi);
     set_integer_field(L, &s_host, "addr_type", device->addr_type);
+    if (runtime_event_mode_supported(inst)) instance_unlock(inst);
     return 1;
 }
 
@@ -1591,19 +2196,27 @@ static int l_connect(lua_State *L)
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     const char *address;
     uint8_t i;
-    if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
-    if (inst->state.connected || inst->state.connecting) {
-        return push_error(L, &s_host, "gamepad is already connected or connecting");
-    }
+    if (!inst) return push_error(L, &s_host, "hidpad instance missing");
     if (s_host.lua.gettop(L) < 1 || !s_host.lua.isstring(L, 1)) {
         return push_error(L, &s_host, "device address missing");
     }
     address = s_host.lua.tostring(L, 1);
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_CONNECT, address) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
+    if (!inst->started) return push_error(L, &s_host, "hidpad is not started");
+    if (inst->state.connected || inst->state.connecting) {
+        return push_error(L, &s_host, "gamepad is already connected or connecting");
+    }
     for (i = 0; i < inst->scan_result_count; ++i) {
-        if (text_equal(inst->scan_results[i].address, address)) {
-            copy_text(inst->preferred_address, sizeof(inst->preferred_address),
+        if (text_equal(inst->cold->scan_results[i].address, address)) {
+            copy_text(inst->cold->preferred_address, sizeof(inst->cold->preferred_address),
                       address, strlen(address));
-            if (!connect_device(inst, &inst->scan_results[i])) {
+            if (!connect_device(inst, &inst->cold->scan_results[i])) {
                 return push_error(L, &s_host, "connect failed");
             }
             s_host.lua.pushboolean(L, 1);
@@ -1617,11 +2230,38 @@ static int l_set_preferred(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     const char *address = "";
+    const char *profile = "";
+    const char *name = "";
+    device_profile_t parsed_profile;
     if (!inst) return push_error(L, &s_host, "hidpad instance missing");
     if (s_host.lua.gettop(L) >= 1 && s_host.lua.isstring(L, 1)) {
         address = s_host.lua.tostring(L, 1);
     }
-    copy_text(inst->preferred_address, sizeof(inst->preferred_address), address, strlen(address));
+    if (runtime_event_mode_supported(inst) && !instance_lock(inst, 1000)) {
+        return push_error(L, &s_host, "hidpad state is busy");
+    }
+    copy_text(inst->cold->preferred_address, sizeof(inst->cold->preferred_address),
+              address, strlen(address));
+    inst->cold->preferred_metadata_valid = 0;
+    inst->cold->preferred_name[0] = 0;
+    if (!address[0]) inst->direct_reconnect_pending = 0;
+    if (s_host.lua.gettop(L) >= 2 && s_host.lua.isnumber(L, 2) &&
+        s_host.lua.gettop(L) >= 3 && s_host.lua.isstring(L, 3)) {
+        profile = s_host.lua.tostring(L, 3);
+        if (parse_profile_text(profile, &parsed_profile)) {
+            int64_t addr_type = s_host.lua.tointeger(L, 2);
+            inst->cold->preferred_addr_type =
+                (uint8_t)(addr_type < 0 ? 0 : (addr_type > 3 ? 3 : addr_type));
+            inst->cold->preferred_profile = parsed_profile;
+            if (s_host.lua.gettop(L) >= 4 && s_host.lua.isstring(L, 4)) {
+                name = s_host.lua.tostring(L, 4);
+            }
+            copy_text(inst->cold->preferred_name, sizeof(inst->cold->preferred_name),
+                      name, strlen(name));
+            inst->cold->preferred_metadata_valid = 1;
+        }
+    }
+    if (runtime_event_mode_supported(inst)) instance_unlock(inst);
     s_host.lua.pushboolean(L, 1);
     return 1;
 }
@@ -1629,6 +2269,13 @@ static int l_set_preferred(lua_State *L)
 static int l_disconnect(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_DISCONNECT, NULL) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) {
         return push_error(L, &s_host, "gamepad is not connected");
     }
@@ -1642,13 +2289,19 @@ static int l_disconnect(lua_State *L)
 static int l_pair(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_PAIR, NULL) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) {
         return push_error(L, &s_host, "gamepad is not connected");
     }
     if (inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK) {
         return push_error(L, &s_host, "pair failed");
     }
-    inst->pair_requested = 1;
     s_host.lua.pushboolean(L, 1);
     return 1;
 }
@@ -1657,6 +2310,13 @@ static int l_forget(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     int32_t err;
+    if (runtime_event_mode_supported(inst)) {
+        if (queue_worker_command(inst, WORKER_COMMAND_FORGET, NULL) != MODULE_OK) {
+            return push_error(L, &s_host, "hidpad command queue is busy");
+        }
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
     if (!inst->host->ble.gap_forget_device) {
         return push_error(L, &s_host, "firmware does not support forgetting bonds");
@@ -1709,7 +2369,8 @@ static int l_forget(lua_State *L)
 static int l_stop(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
-    driver_stop(inst);
+    if (runtime_event_mode_supported(inst)) stop_worker(inst);
+    else driver_stop(inst);
     s_host.lua.pushboolean(L, 1);
     return 1;
 }
@@ -1744,10 +2405,8 @@ HIDPAD_EXPORT int32_t module_create_v2(module_host_resolve_v2_fn resolve,
         return MODULE_ERR_UNSUPPORTED;
     }
     *out_instance = NULL;
-    err = module_sdk_resolve_host_v2(resolve, resolve_ctx, &s_host);
+    err = resolve_host(resolve, resolve_ctx);
     if (err != MODULE_OK) return err;
-    if (!s_host.ble.open || !s_host.ble.event_poll || !s_host.heap.calloc || !s_host.heap.free ||
-        !s_host.lua.createtable || !s_host.lua.pushlstring) return MODULE_ERR_UNSUPPORTED;
     inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst),
                                                    MODULE_HEAP_INTERNAL | MODULE_HEAP_8BIT);
     if (!inst) inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst),
@@ -1755,12 +2414,22 @@ HIDPAD_EXPORT int32_t module_create_v2(module_host_resolve_v2_fn resolve,
     if (!inst) inst = (hidpad_instance_t *)s_host.heap.calloc(1, sizeof(*inst), MODULE_HEAP_DEFAULT);
     if (!inst) return MODULE_ERR_NO_MEMORY;
     inst->host = &s_host;
+    inst->cold = (hidpad_cold_state_t *)s_host.heap.calloc(
+        1, sizeof(*inst->cold), MODULE_HEAP_PSRAM | MODULE_HEAP_8BIT);
+    if (!inst->cold) {
+        s_host.heap.free(inst);
+        return MODULE_ERR_NO_MEMORY;
+    }
     inst->owner_token = info->owner_token;
     inst->scan_ms = 8000;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->conn_handle = 0xffff;
     inst->phase = PHASE_STOPPED;
     inst->profile = DEVICE_PROFILE_HID;
+    inst->event_ref = -2;
+    if (!runtime_event_mode_supported(inst) && s_host.serial.println) {
+        s_host.serial.println("runtime.event_post unsupported; please update to latest firmware");
+    }
     *out_instance = inst;
     return MODULE_OK;
 }
@@ -1769,10 +2438,12 @@ HIDPAD_EXPORT int32_t module_luaopen_v1(void *instance, lua_State *L)
 {
     hidpad_instance_t *inst = (hidpad_instance_t *)instance;
     if (!inst || !L) return MODULE_ERR_INVALID_ARG;
+    inst->lua = L;
     s_host.lua.createtable(L, 0, 32);
     set_string_field(L, &s_host, "VERSION", HIDPAD_VERSION);
     set_function(L, "start", l_start, inst);
     set_function(L, "poll", l_poll, inst);
+    set_function(L, "on_event", l_on_event, inst);
     set_function(L, "state", l_state, inst);
     set_function(L, "rescan", l_rescan, inst);
     set_function(L, "scan", l_scan, inst);
@@ -1807,6 +2478,18 @@ HIDPAD_EXPORT void module_destroy_v1(void *instance)
 {
     hidpad_instance_t *inst = (hidpad_instance_t *)instance;
     if (!inst) return;
-    driver_stop(inst);
-    if (inst->host && inst->host->heap.free) inst->host->heap.free(inst);
+    if (runtime_event_mode_supported(inst)) {
+        stop_worker(inst);
+        if (inst->event_ref > -1 && inst->lua) {
+            inst->host->runtime.event_cancel(inst->lua, inst->event_ref);
+            inst->host->lua.registry_unref(inst->lua, inst->event_ref);
+            inst->event_ref = -2;
+        }
+    } else {
+        driver_stop(inst);
+    }
+    if (inst->host && inst->host->heap.free) {
+        inst->host->heap.free(inst->cold);
+        inst->host->heap.free(inst);
+    }
 }
