@@ -82,6 +82,12 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
                          hidpad_profile_t profile,
                          hidpad_decoded_report_t *out);
 
+/** Decode the fixed 10-byte report used by Q36 for Android controllers. */
+int hidpad_q36_decode_android(uint8_t report_id,
+                              const uint8_t *data,
+                              size_t len,
+                              hidpad_decoded_report_t *out);
+
 #ifdef __cplusplus
 }
 #endif

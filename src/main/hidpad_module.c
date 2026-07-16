@@ -829,6 +829,12 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
         remember_report(report, data, len, 1);
         return 1;
     }
+    if (inst->profile == DEVICE_PROFILE_Q36 &&
+        hidpad_q36_decode_android(report_id, data, len, decoded)) {
+        apply_decoded(inst, report, decoded, data, len);
+        remember_report(report, data, len, 1);
+        return 1;
+    }
     profile = inst->profile == DEVICE_PROFILE_Q36 ? HIDPAD_PROFILE_Q36 : HIDPAD_PROFILE_GENERIC;
     if (profile == HIDPAD_PROFILE_Q36 && !inst->parser.has_report_id) report_id = 0;
     decoded_ok = hidpad_parser_decode(&inst->parser, report_id, data, len, profile, decoded);
@@ -994,6 +1000,8 @@ static void finish_subscribe(hidpad_instance_t *inst)
     }
     inst->phase = PHASE_READY;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
+    inst->last_error = NULL;
+    inst->state.disconnect_reason = 0;
     if (inst->host->ble.gap_set_connection_params) {
         (void)inst->host->ble.gap_set_connection_params(
             inst->session, inst->conn_handle,
@@ -1433,6 +1441,14 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         if (inst->pending_read == PENDING_READ_MAP) {
             inst->report_map_valid = hidpad_parser_parse(
                 &inst->parser, event->data, event->data_len) ? 1 : 0;
+            /* Q36 for Android exposes a valid keyboard-like map that does not
+             * contain fields understood by the gamepad-only parser. Its fixed
+             * 10-byte input report is decoded by hidpad_q36_decode_android(). */
+            if (!inst->report_map_valid && event->data_len > 0 &&
+                (text_contains(inst->state.name, "q36") ||
+                 text_contains(inst->state.name, "shanwan"))) {
+                inst->report_map_valid = 1;
+            }
         } else if (inst->pending_read == PENDING_READ_REFERENCE &&
                    inst->pending_report_index < inst->report_count && event->data_len >= 2) {
             report = &inst->reports[inst->pending_report_index];
