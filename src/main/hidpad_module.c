@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "0.5.0"
+#define HIDPAD_VERSION "0.5.1"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 8
@@ -501,6 +501,13 @@ static int text_contains(const char *text, const char *needle)
     return 0;
 }
 
+static int is_q36_compatible_name(const char *name)
+{
+    return text_contains(name, "q36") ||
+           text_contains(name, "q34") ||
+           text_contains(name, "shanwan");
+}
+
 static int text_equal(const char *left, const char *right)
 {
     size_t i = 0;
@@ -831,7 +838,7 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
     }
     if (inst->profile == DEVICE_PROFILE_Q36 &&
         hidpad_q36_decode_android(report_id, data, len, decoded)) {
-        apply_decoded(inst, report, decoded, data, len);
+        apply_decoded(inst, report, decoded);
         remember_report(report, data, len, 1);
         return 1;
     }
@@ -880,20 +887,19 @@ static void parse_advertisement(const uint8_t *data, size_t len, advertisement_t
 static int score_advertisement(const advertisement_t *adv, device_profile_t *profile)
 {
     int score = 0;
+    int q36_compatible;
     if (text_contains(adv->name, "xbox") ||
         (adv->appearance == 0x03c4 && adv->company == 0x0006)) {
         *profile = DEVICE_PROFILE_XBOX;
         return 240;
     }
-    if (adv->has_hid || text_contains(adv->name, "q36") ||
-        text_contains(adv->name, "q34") ||
-        text_contains(adv->name, "shanwan")) {
+    q36_compatible = is_q36_compatible_name(adv->name);
+    if (adv->has_hid || q36_compatible) {
         *profile = DEVICE_PROFILE_Q36;
     } else {
         *profile = DEVICE_PROFILE_HID;
     }
-    if (text_contains(adv->name, "q36") || text_contains(adv->name, "q34") ||
-        text_contains(adv->name, "shanwan")) score += 100;
+    if (q36_compatible) score += 100;
     if (adv->has_hid) score += 100;
     if (adv->appearance == 0x03c4 || adv->appearance == 0x03c3) score += 80;
     if (text_contains(adv->name, "gamepad") || text_contains(adv->name, "controller") ||
@@ -1184,8 +1190,7 @@ static int should_auto_connect(const hidpad_instance_t *inst,
     if (inst->cold->preferred_address[0] &&
         text_equal(inst->cold->preferred_address, device->address)) return 1;
     return text_contains(device->name, "xbox") ||
-           text_contains(device->name, "q36") ||
-           text_contains(device->name, "q34");
+           is_q36_compatible_name(device->name);
 }
 
 static int connect_device(hidpad_instance_t *inst, const discovered_device_t *device)
@@ -1441,12 +1446,12 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         if (inst->pending_read == PENDING_READ_MAP) {
             inst->report_map_valid = hidpad_parser_parse(
                 &inst->parser, event->data, event->data_len) ? 1 : 0;
-            /* Q36 for Android exposes a valid keyboard-like map that does not
-             * contain fields understood by the gamepad-only parser. Its fixed
-             * 10-byte input report is decoded by hidpad_q36_decode_android(). */
+            /* ShanWan Q34/Q36 Android mode exposes a valid keyboard-like map
+             * that has no fields understood by the gamepad-only parser. Its
+             * fixed 10-byte input report is decoded separately. Q34U commonly
+            * advertises as "GamepadSpace-Q34U", not "ShanWan". */
             if (!inst->report_map_valid && event->data_len > 0 &&
-                (text_contains(inst->state.name, "q36") ||
-                 text_contains(inst->state.name, "shanwan"))) {
+                is_q36_compatible_name(inst->state.name)) {
                 inst->report_map_valid = 1;
             }
         } else if (inst->pending_read == PENDING_READ_REFERENCE &&

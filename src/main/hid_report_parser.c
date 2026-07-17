@@ -281,7 +281,7 @@ int hidpad_q36_decode_android(uint8_t report_id,
     zero_bytes(out, sizeof(*out));
     out->report_id = report_id;
     out->valid_mask = HIDPAD_VALID_GAME_BUTTONS | HIDPAD_VALID_LT | HIDPAD_VALID_RT;
-    apply_hat(out, data[offset + 4], 0, 7, HIDPAD_PROFILE_Q36);
+    apply_hat(out, data[offset + 4], 0, 7);
 
     buttons = data[offset + 5];
     system = data[offset + 6];

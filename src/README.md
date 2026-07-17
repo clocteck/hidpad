@@ -17,7 +17,7 @@
 - BLE HID 手柄：广播中发现 HID Service `0x1812` 后，优先使用 Q36 profile；连接后
   发现 Report Map `0x2A4B`、Input Report `0x2A4D`、Report Reference `0x2908` 和
   CCCD `0x2902`，根据 HID Report Map 解析方向帽、按钮、双摇杆和扳机。
-- 名称包含 `Q36` 或 `ShanWan` 的设备，即使广播包没有携带 `0x1812`，也使用 Q36
+- 名称包含 `Q34`、`Q36` 或 `ShanWan` 的设备，即使广播包没有携带 `0x1812`，也使用 Q36
   profile 尝试连接。
 
 ## Q36 profile
@@ -41,8 +41,9 @@ Q36 profile 仍以手柄提供的 HID Report Map 决定字段位置、位宽和�
 
 连接链路也保持旧 Q36 行为：先用 16-bit `1812` 查找 HID Service，找不到时改用完整
 Bluetooth Base UUID `00001812-0000-1000-8000-00805f9b34fb`，整套初始化最多执行两次。
-Q36 必须成功读取 Report Map；标准手柄字段按 Map 解析，`Q36 for Android`/ShanWan
-的键盘型 Map 则使用该手柄的 10 字节定长输入格式兼容解码。随后只订阅带
+Q36 必须成功读取 Report Map；标准手柄字段按 Map 解析，`Q34U`、
+`Q36 for Android`/ShanWan 的键盘型 Map 则使用该系列手柄的 10 字节定长输入格式兼容
+解码。Q34U 的常见广播名为 `GamepadSpace-Q34U`。随后只订阅带
 notify/indicate 的 Input Report，
 Report ID `3` 继续作为 Consumer Report 与普通手柄状态合并。Xbox 则和旧
 `LiteXboxController` 一样，只订阅第一个支持 notify 的 `0x2A4D` controls report。
