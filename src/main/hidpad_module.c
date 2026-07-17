@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "0.5.1"
+#define HIDPAD_VERSION "1.0.0"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 8
@@ -202,6 +202,7 @@ typedef struct report_characteristic_t {
     uint8_t last_report_len;
     uint8_t last_report_valid;
     uint8_t last_decode_ok;
+    uint32_t notify_count;
     uint32_t game_buttons;
     uint32_t consumer_buttons;
     uint32_t raw_buttons;
@@ -280,6 +281,10 @@ typedef struct hidpad_instance_t {
     uint32_t next_input_poll_ms;
     uint32_t next_keepalive_ms;
     uint32_t keepalive_count;
+    uint32_t input_notify_count;
+    uint16_t last_report_handle;
+    uint8_t last_report_len;
+    char last_report_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
     uint16_t conn_handle;
     uint16_t hid_start;
     uint16_t hid_end;
@@ -328,7 +333,7 @@ static const module_manifest_t s_manifest = {
     sizeof(module_manifest_t),
     "hidpad",
     HIDPAD_VERSION,
-    "BLE Xbox and HID 0x1812 gamepad driver",
+    "BLE gamepad driver compatible with Xbox, Q34 and Q36",
     0,
     MODULE_BOOTSTRAP_ABI_VERSION,
 };
@@ -508,6 +513,11 @@ static int is_q36_compatible_name(const char *name)
            text_contains(name, "shanwan");
 }
 
+static int is_q34_name(const char *name)
+{
+    return name && text_contains(name, "q34");
+}
+
 static int text_equal(const char *left, const char *right)
 {
     size_t i = 0;
@@ -630,6 +640,10 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->control_point_handle = 0;
     inst->control_point_properties = 0;
     inst->next_keepalive_ms = 0;
+    inst->input_notify_count = 0;
+    inst->last_report_handle = 0;
+    inst->last_report_len = 0;
+    inst->last_report_hex[0] = 0;
     zero_bytes(inst->reports, sizeof(inst->reports));
     inst->report_count = 0;
     inst->descriptor_index = 0;
@@ -685,6 +699,33 @@ static void remember_report(report_characteristic_t *report,
     for (i = 0; i < len; ++i) report->last_report[i] = data[i];
     report->last_report_len = (uint8_t)len;
     report->last_report_valid = 1;
+}
+
+static void bytes_to_hex(char *out, size_t out_size, const uint8_t *data, size_t len)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t i;
+    size_t stored_len = len;
+    size_t capacity;
+    if (!out || out_size == 0) return;
+    out[0] = 0;
+    if (!data) return;
+    capacity = (out_size - 1u) / 2u;
+    if (stored_len > capacity) stored_len = capacity;
+    for (i = 0; i < stored_len; ++i) {
+        out[i * 2u] = hex[data[i] >> 4];
+        out[i * 2u + 1u] = hex[data[i] & 0x0fu];
+    }
+    out[stored_len * 2u] = 0;
+}
+
+static void remember_input_packet(hidpad_instance_t *inst, uint16_t value_handle,
+                                  const uint8_t *data, size_t len)
+{
+    if (!inst || !data) return;
+    bytes_to_hex(inst->last_report_hex, sizeof(inst->last_report_hex), data, len);
+    inst->last_report_handle = value_handle;
+    inst->last_report_len = (uint8_t)len;
 }
 
 static void apply_decoded(hidpad_instance_t *inst,
@@ -786,7 +827,10 @@ static int decode_xbox(hidpad_decoded_report_t *decoded, const uint8_t *data, si
     uint16_t lt_raw;
     uint16_t rt_raw;
     uint8_t dpad;
-    if (!decoded || !data || len != 16) return 0;
+    /* Xbox Elite Series 2 reuses the common 16-byte BLE controls payload and
+     * may append profile, trigger-mode and paddle metadata. Basic input only
+     * needs the shared prefix; optional Elite data is deliberately ignored. */
+    if (!decoded || !data || len < 16) return 0;
     zero_bytes(decoded, sizeof(*decoded));
     decoded->valid_mask = HIDPAD_VALID_GAME_BUTTONS | HIDPAD_VALID_LX | HIDPAD_VALID_LY |
                           HIDPAD_VALID_RX | HIDPAD_VALID_RY | HIDPAD_VALID_LT | HIDPAD_VALID_RT;
@@ -836,7 +880,7 @@ static int decode_hid(hidpad_instance_t *inst, report_characteristic_t *report,
         remember_report(report, data, len, 1);
         return 1;
     }
-    if (inst->profile == DEVICE_PROFILE_Q36 &&
+    if (inst->profile == DEVICE_PROFILE_Q36 && inst->parser.field_count == 0 &&
         hidpad_q36_decode_android(report_id, data, len, decoded)) {
         apply_decoded(inst, report, decoded);
         remember_report(report, data, len, 1);
@@ -1462,6 +1506,11 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         } else if (inst->pending_read == PENDING_READ_INPUT &&
                    inst->pending_report_index < inst->report_count) {
             report = &inst->reports[inst->pending_report_index];
+            if (!report_is_duplicate(report, event->data, event->data_len)) {
+                remember_input_packet(inst, report->value_handle,
+                                      event->data, event->data_len);
+                mark_dirty(inst);
+            }
             decode_hid(inst, report, event->data, event->data_len);
         }
         break;
@@ -1497,6 +1546,13 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         report = find_report(inst, event->value_handle);
         if (report && (inst->profile != DEVICE_PROFILE_XBOX ||
                        report->value_handle == inst->controls_report_handle)) {
+            inst->input_notify_count++;
+            report->notify_count++;
+            if (!report_is_duplicate(report, event->data, event->data_len)) {
+                remember_input_packet(inst, report->value_handle,
+                                      event->data, event->data_len);
+                mark_dirty(inst);
+            }
             decode_hid(inst, report, event->data, event->data_len);
         }
         break;
@@ -1521,7 +1577,12 @@ static void poll_input_fallback(hidpad_instance_t *inst)
 {
     uint8_t checked = 0;
     uint32_t now = now_ms(inst);
-    if (inst->profile == DEVICE_PROFILE_Q36 || inst->profile == DEVICE_PROFILE_XBOX ||
+    int q34_read_fallback;
+    if (!inst) return;
+    q34_read_fallback = inst->profile == DEVICE_PROFILE_Q36 &&
+                        is_q34_name(inst->state.name);
+    if (inst->profile == DEVICE_PROFILE_XBOX ||
+        (inst->profile == DEVICE_PROFILE_Q36 && !q34_read_fallback) ||
         inst->phase != PHASE_READY || inst->pending_read != PENDING_READ_NONE ||
         (int32_t)(now - inst->next_input_poll_ms) < 0) return;
     inst->next_input_poll_ms = now + 80;
@@ -1532,7 +1593,9 @@ static void poll_input_fallback(hidpad_instance_t *inst)
         if (index >= inst->report_count) index = 0;
         report = &inst->reports[index];
         if ((report->report_type == 0 || report->report_type == 1) &&
-            (report->properties & MODULE_BLE_CHAR_PROP_READ) != 0 && !report->subscribed) {
+            (report->properties & MODULE_BLE_CHAR_PROP_READ) != 0 &&
+            (!report->subscribed ||
+             (q34_read_fallback && report->notify_count == 0))) {
             start_read(inst, report->value_handle, PENDING_READ_INPUT, index);
             return;
         }
@@ -1967,6 +2030,7 @@ static void set_string_field(lua_State *L, const hidpad_host_api_t *host,
 static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_index)
 {
     const hidpad_host_api_t *host = inst->host;
+    char report_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
     set_integer_at(L, host, table_index, "seq", inst->state.seq);
     set_integer_at(L, host, table_index, "timestamp_ms", inst->state.timestamp_ms);
     set_integer_at(L, host, table_index, "buttons", inst->state.buttons);
@@ -1978,6 +2042,32 @@ static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_in
     set_integer_at(L, host, table_index, "lt", inst->state.lt);
     set_integer_at(L, host, table_index, "rt", inst->state.rt);
     set_integer_at(L, host, table_index, "report_id", inst->state.report_id);
+    set_integer_at(L, host, table_index, "notify_count", inst->input_notify_count);
+    set_integer_at(L, host, table_index, "last_report_handle", inst->last_report_handle);
+    set_integer_at(L, host, table_index, "last_report_len", inst->last_report_len);
+    set_string_at(L, host, table_index, "last_report_hex", inst->last_report_hex);
+    if (inst->report_count > 0) {
+        report_characteristic_t *report = &inst->reports[0];
+        bytes_to_hex(report_hex, sizeof(report_hex), report->last_report,
+                     report->last_report_valid ? report->last_report_len : 0);
+        set_integer_at(L, host, table_index, "report0_handle", report->value_handle);
+        set_integer_at(L, host, table_index, "report0_id", report->report_id);
+        set_integer_at(L, host, table_index, "report0_len",
+                       report->last_report_valid ? report->last_report_len : 0);
+        set_integer_at(L, host, table_index, "report0_notify_count", report->notify_count);
+        set_string_at(L, host, table_index, "report0_hex", report_hex);
+    }
+    if (inst->report_count > 1) {
+        report_characteristic_t *report = &inst->reports[1];
+        bytes_to_hex(report_hex, sizeof(report_hex), report->last_report,
+                     report->last_report_valid ? report->last_report_len : 0);
+        set_integer_at(L, host, table_index, "report1_handle", report->value_handle);
+        set_integer_at(L, host, table_index, "report1_id", report->report_id);
+        set_integer_at(L, host, table_index, "report1_len",
+                       report->last_report_valid ? report->last_report_len : 0);
+        set_integer_at(L, host, table_index, "report1_notify_count", report->notify_count);
+        set_string_at(L, host, table_index, "report1_hex", report_hex);
+    }
 }
 
 static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)

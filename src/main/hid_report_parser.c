@@ -269,18 +269,25 @@ int hidpad_q36_decode_android(uint8_t report_id,
     uint8_t buttons;
     uint8_t system;
     if (!data || !out) return 0;
-    if (len == 11 && data[1] == 0x80 && data[2] == 0x80 &&
-        data[3] == 0x80 && data[4] == 0x80) {
+    if (len == 11) {
         offset = 1;
         if (report_id == 0) report_id = data[0];
-    } else if (len != 10 || data[0] != 0x80 || data[1] != 0x80 ||
-               data[2] != 0x80 || data[3] != 0x80) {
+    } else if (len != 10) {
         return 0;
     }
 
     zero_bytes(out, sizeof(*out));
     out->report_id = report_id;
-    out->valid_mask = HIDPAD_VALID_GAME_BUTTONS | HIDPAD_VALID_LT | HIDPAD_VALID_RT;
+    out->valid_mask = HIDPAD_VALID_GAME_BUTTONS |
+                      HIDPAD_VALID_LX | HIDPAD_VALID_LY |
+                      HIDPAD_VALID_RX | HIDPAD_VALID_RY |
+                      HIDPAD_VALID_LT | HIDPAD_VALID_RT;
+    out->lx = normalize_axis(data[offset], 0, 255, 0);
+    out->ly = normalize_axis(data[offset + 1], 0, 255, 1);
+    out->rx = normalize_axis(data[offset + 2], 0, 255, 0);
+    out->ry = normalize_axis(data[offset + 3], 0, 255, 1);
+    out->lt = (uint16_t)((uint16_t)data[offset + 7] * 257u);
+    out->rt = (uint16_t)((uint16_t)data[offset + 8] * 257u);
     apply_hat(out, data[offset + 4], 0, 7);
 
     buttons = data[offset + 5];
@@ -292,8 +299,6 @@ int hidpad_q36_decode_android(uint8_t report_id,
     if (buttons & (1u << 4)) out->buttons |= BTN_Y;
     if (buttons & (1u << 6)) out->buttons |= BTN_LB;
     if (buttons & (1u << 7)) out->buttons |= BTN_RB;
-    if (system & (1u << 0)) out->lt = 65535;
-    if (system & (1u << 1)) out->rt = 65535;
     if (system & (1u << 2)) out->buttons |= BTN_VIEW;
     if (system & (1u << 3)) out->buttons |= BTN_MENU;
     if (system & (1u << 4)) out->buttons |= BTN_HOME;

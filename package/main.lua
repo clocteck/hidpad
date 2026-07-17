@@ -1,5 +1,5 @@
 local APP = {
-  VERSION = "0.0.3",
+  VERSION = "1.0.0",
   APP_DIR = "/sd/apps/hidpad",
   MODULE_PATH = "/sd/apps/hidpad/modules/hidpad.so",
   CONFIG_PATH = "/sd/apps/hidpad/config.json",
@@ -429,6 +429,16 @@ local function poll_driver()
     S.raw.rx, S.raw.ry = raw.rx or 0, raw.ry or 0
     S.raw.lt, S.raw.rt = raw.lt or 0, raw.rt or 0
     S.raw.report_id = raw.report_id or 0
+    S.raw.notify_count = raw.notify_count or S.raw.notify_count or 0
+    S.raw.last_report_handle = raw.last_report_handle or S.raw.last_report_handle or 0
+    S.raw.last_report_len = raw.last_report_len or S.raw.last_report_len or 0
+    S.raw.last_report_hex = raw.last_report_hex or S.raw.last_report_hex or ""
+    for index = 0, 1 do
+      for _, suffix in ipairs({ "handle", "id", "len", "notify_count", "hex" }) do
+        local key = "report" .. index .. "_" .. suffix
+        S.raw[key] = raw[key] ~= nil and raw[key] or S.raw[key]
+      end
+    end
   end
   if status_update then remember_ready_device(S.raw) end
   sample_calibration(S.raw)
@@ -468,6 +478,10 @@ local function state_snapshot()
       lx = S.raw.lx or 0, ly = S.raw.ly or 0,
       rx = S.raw.rx or 0, ry = S.raw.ry or 0,
       lt = S.raw.lt or 0, rt = S.raw.rt or 0,
+      notify_count = S.raw.notify_count or 0,
+      last_report_handle = S.raw.last_report_handle or 0,
+      last_report_len = S.raw.last_report_len or 0,
+      last_report_hex = S.raw.last_report_hex or "",
     },
     output = S.output,
     pressed = pressed,
@@ -499,6 +513,20 @@ local function input_snapshot()
     lx = S.raw.lx or 0, ly = S.raw.ly or 0,
     rx = S.raw.rx or 0, ry = S.raw.ry or 0,
     lt = S.raw.lt or 0, rt = S.raw.rt or 0,
+    notify_count = S.raw.notify_count or 0,
+    last_report_handle = S.raw.last_report_handle or 0,
+    last_report_len = S.raw.last_report_len or 0,
+    last_report_hex = S.raw.last_report_hex or "",
+    report0_handle = S.raw.report0_handle or 0,
+    report0_id = S.raw.report0_id or 0,
+    report0_len = S.raw.report0_len or 0,
+    report0_notify_count = S.raw.report0_notify_count or 0,
+    report0_hex = S.raw.report0_hex or "",
+    report1_handle = S.raw.report1_handle or 0,
+    report1_id = S.raw.report1_id or 0,
+    report1_len = S.raw.report1_len or 0,
+    report1_notify_count = S.raw.report1_notify_count or 0,
+    report1_hex = S.raw.report1_hex or "",
   }
 end
 
@@ -666,7 +694,7 @@ local PAGE = [==[
 <title>BLE 手柄服务</title><style>
 :root{color-scheme:light;--bg:#f4f6f8;--card:#fff;--text:#17202a;--muted:#68737d;--line:#dfe5ea;--blue:#1769e0;--green:#16845b;--red:#c63d3d;--shadow:0 8px 28px rgba(18,32,48,.07)}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:1040px;margin:auto;padding:20px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}h1{font-size:24px;margin:0}.sub{color:var(--muted);margin:3px 0 0}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--card)}.dot{width:9px;height:9px;border-radius:50%;background:#9aa4ad}.online .dot{background:var(--green)}.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}.card h2{font-size:16px;margin:0 0 14px}.meta{display:grid;grid-template-columns:86px 1fr;gap:7px 12px;margin-bottom:14px}.meta span:nth-child(odd){color:var(--muted)}.axes{display:grid;grid-template-columns:1fr 1fr;gap:10px}.axis{padding:10px;border-radius:10px;background:#f7f9fb}.axis b{display:flex;justify-content:space-between;margin-bottom:7px}.track{height:7px;background:#dde4ea;border-radius:9px;overflow:hidden}.fill{height:100%;width:50%;background:var(--blue)}.pressed{min-height:44px;display:flex;flex-wrap:wrap;gap:7px}.chip{padding:6px 9px;border-radius:8px;background:#e9f2ff;color:#1258b8;font-weight:650}.empty,.mask{color:var(--muted)}.mask{display:block;margin-top:5px}.field-label{display:block;color:var(--muted);margin-bottom:6px}.device-picker{display:grid;grid-template-columns:1fr auto;gap:9px;margin-bottom:10px}.device-picker select{min-width:0;min-height:44px;border:1px solid var(--line);border-radius:9px;padding:0 10px;background:#fff}button,select,input{font:inherit}button{min-height:44px;border:0;border-radius:9px;padding:0 15px;background:var(--blue);color:white;font-weight:650;cursor:pointer;touch-action:manipulation}button:active{filter:brightness(.92)}button:disabled{cursor:not-allowed;opacity:.5}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid rgba(23,105,224,.28);outline-offset:2px}button.secondary{background:#edf1f5;color:var(--text);border:1px solid var(--line)}button.danger{background:#fff0f0;color:var(--red);border:1px solid #f1cccc}.actions{display:flex;flex-wrap:wrap;gap:9px}.notice{min-height:22px;margin:10px 0 0;color:var(--muted)}.notice.bad{color:var(--red)}.notice.good{color:var(--green)}.cal-help{color:var(--muted);margin:-5px 0 14px}.range-row{display:grid;grid-template-columns:100px 1fr 66px;gap:10px;align-items:center;margin:10px 0}.range-row input{width:100%}.map{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.map-row{display:grid;grid-template-columns:1fr 1.25fr;align-items:center;gap:8px}.map-row select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:9px;padding:0 10px;background:#fff}.wide{grid-column:1/-1}.footer{color:var(--muted);margin:16px 2px 0;font-size:12px}@media(max-width:760px){main{padding:12px}.top{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.map{grid-template-columns:1fr}.card{padding:15px}.range-row{grid-template-columns:84px 1fr 58px}.device-picker{grid-template-columns:1fr}button,select,input{font-size:16px}}
-</style></head><body><main><header class="top"><div><h1>BLE 手柄服务</h1><p class="sub">Xbox 与 0x1812 Android HID · 输入映射与校准</p></div><div id="status" class="status"><i class="dot"></i><span>读取中</span></div></header>
+</style></head><body><main><header class="top"><div><h1>BLE 手柄服务</h1><p class="sub">兼容 Xbox、Q34、Q36 · 输入映射与校准</p></div><div id="status" class="status"><i class="dot"></i><span>读取中</span></div></header>
 <section class="grid"><article class="card"><h2>实时状态</h2><div class="meta"><span>设备</span><strong id="device">--</strong><span>地址</span><code id="address">--</code><span>驱动</span><span id="profile">--</span><span>阶段</span><span id="phase">--</span></div><div class="axes"><div class="axis"><b><span>LX</span><span id="lxv">0</span></b><div class="track"><div class="fill" id="lx"></div></div></div><div class="axis"><b><span>LY</span><span id="lyv">0</span></b><div class="track"><div class="fill" id="ly"></div></div></div><div class="axis"><b><span>RX</span><span id="rxv">0</span></b><div class="track"><div class="fill" id="rx"></div></div></div><div class="axis"><b><span>RY</span><span id="ryv">0</span></b><div class="track"><div class="fill" id="ry"></div></div></div><div class="axis"><b><span>LT</span><span id="ltv">0</span></b><div class="track"><div class="fill" id="lt"></div></div></div><div class="axis"><b><span>RT</span><span id="rtv">0</span></b><div class="track"><div class="fill" id="rt"></div></div></div></div><h2 style="margin-top:16px">应用收到的按键</h2><div id="pressed" class="pressed"><span class="empty">未按下</span></div><code id="buttonMask" class="mask">raw=0x0000 mapped=0x0000</code></article>
 <article class="card"><h2>连接管理</h2><div class="actions" style="margin-bottom:14px"><button class="secondary" id="enableDriver" data-cmd="enable">启用驱动</button><button class="secondary" id="disableDriver" data-cmd="disable">禁用驱动</button></div><label class="field-label" for="deviceList">扫描到的手柄</label><div class="device-picker"><select id="deviceList"><option value="">点击“扫描手柄”查找设备</option></select><button id="connectDevice" disabled>连接并配对</button></div><div class="actions"><button class="secondary" id="scanDevices">扫描手柄</button><button class="secondary" data-cmd="pair">重新配对当前</button><button class="secondary" data-cmd="disconnect">断开</button><button class="danger" data-cmd="forget">忘记当前手柄</button></div><p id="message" class="notice" aria-live="polite"></p><h2 style="margin-top:22px">摇杆校准</h2><p class="cal-help">手柄静止时开始，然后把两个摇杆转满一圈、按满扳机，最后保存。</p><div class="actions"><button id="calStart" data-cmd="calibration_start">开始采样</button><button class="secondary" data-cmd="calibration_save">保存校准</button><button class="secondary" data-cmd="calibration_cancel">取消</button></div><div class="range-row"><label for="deadzone">中心死区</label><input id="deadzone" type="range" min="0" max="16000" step="100"><output id="deadzoneValue">0</output></div><div class="actions"><button class="secondary" id="saveConfig">保存死区</button><button class="danger" data-cmd="restore_defaults">恢复默认</button></div></article>
 <article class="card wide"><h2>按键映射</h2><p class="cal-help">左侧是应用收到的目标键，右侧选择手柄原始键。支持交换 A/B、X/Y 或自定义肩键。</p><div id="mapping" class="map"></div><div class="actions" style="margin-top:16px"><button id="saveMapping">保存映射</button></div></article></section><p class="footer">输入通过 controller source <code>ble-main</code> 发布；RetroGo 无需直接持有 BLE。</p></main>

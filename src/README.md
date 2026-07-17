@@ -1,8 +1,10 @@
-# HID Pad Service
+# HID Pad Service 1.0.0
 
 `hidpad` 是 Cubic Lua 的常驻 BLE 手柄服务。BLE 扫描、连接、配对、GATT 发现和 HID
 报告解析位于 `hidpad.so`；Lua 只负责校准、按键映射、Web 设置和向
 `controller` 总线发布标准化状态。
+
+版本 1.0.0 兼容 Xbox BLE、ShanWan Q34/Q34U 和 Q36 系列手柄的主要输入。
 
 该版本要求固件提供 BLE dynmod ABI、`controller.publish` 和 `ipc.listen`，不兼容旧
 固件。能力缺失时，Service 会在串口输出：
@@ -43,12 +45,22 @@ Q36 profile 仍以手柄提供的 HID Report Map 决定字段位置、位宽和�
 Bluetooth Base UUID `00001812-0000-1000-8000-00805f9b34fb`，整套初始化最多执行两次。
 Q36 必须成功读取 Report Map；标准手柄字段按 Map 解析，`Q34U`、
 `Q36 for Android`/ShanWan 的键盘型 Map 则使用该系列手柄的 10 字节定长输入格式兼容
-解码。Q34U 的常见广播名为 `GamepadSpace-Q34U`。随后只订阅带
+解码，其中前 4 字节按双摇杆的 `0..255` 原始值解析，不要求中心值精确等于 `0x80`；
+第 8、9 字节分别作为 LT、RT 的 `0..255` 模拟量解析。
+Q34U 的常见广播名为 `GamepadSpace-Q34U`。随后只订阅带
 notify/indicate 的 Input Report，
 Report ID `3` 继续作为 Consumer Report 与普通手柄状态合并。Xbox 则和旧
 `LiteXboxController` 一样，只订阅第一个支持 notify 的 `0x2A4D` controls report。
+普通 Xbox BLE 主报告为 16 字节；Xbox Elite Wireless Controller Series 2 复用相同的
+前 16 字节基础控制布局，但部分固件会在尾部追加 Elite 元数据。驱动接受不少于 16 字节的
+Xbox 输入报告并忽略扩展尾部，因此支持 Elite 2 的主要按键、摇杆和 LT/RT；不支持四个
+拨片、Profile 元数据或震动输出。第一代 Xbox Elite 不具备 Bluetooth/BLE，不能通过本
+BLE 驱动连接。
 
 通知订阅通过 descriptor discovery 查找 CCCD，不使用 `value_handle + 1` 猜测。
+Q34U 在恢复旧绑定时偶尔会接受 CCCD 写入却不启动某一路 Input Report 通知；驱动逐个
+Report 记录通知计数，对尚未收到 notify 且同时具备 READ 属性的 Report 轮询输入作为兜底。
+某一路正常收到 notify 后立即停止轮询该路，不会因用户没有按键而误判、断线或重新配对。
 通用 HID profile 中，没有 notify/indicate 的可读 Input Report 会由驱动低频轮询；
 Q36 和 Xbox 保持旧固件的纯通知链路，不额外轮询 Input Report。
 驱动发现 HID Control Point `0x2A4C` 后，每 15 秒发送一次标准 Exit Suspend 命令；没有
