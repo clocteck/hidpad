@@ -1,0 +1,7 @@
+name = S31 BLE Diagnostic
+version = 1.0.0
+entry = main.lua
+kind = service
+allow_webui = false
+autostart_service = false
+description = One-shot S31 dynamic-module BLE-open diagnostic

@@ -1,9 +1,13 @@
 #include "hid_report_parser.h"
 
 #define USAGE_PAGE_GENERIC_DESKTOP 0x01u
+#define USAGE_PAGE_SIMULATION 0x02u
 #define USAGE_PAGE_BUTTON 0x09u
 #define USAGE_PAGE_CONSUMER 0x0cu
 
+#define USAGE_JOYSTICK 0x04u
+#define USAGE_GAME_PAD 0x05u
+#define USAGE_MULTI_AXIS_CONTROLLER 0x08u
 #define USAGE_X 0x30u
 #define USAGE_Y 0x31u
 #define USAGE_Z 0x32u
@@ -11,6 +15,12 @@
 #define USAGE_RY 0x34u
 #define USAGE_RZ 0x35u
 #define USAGE_HAT 0x39u
+#define USAGE_DPAD_UP 0x90u
+#define USAGE_DPAD_DOWN 0x91u
+#define USAGE_DPAD_RIGHT 0x92u
+#define USAGE_DPAD_LEFT 0x93u
+#define USAGE_ACCELERATOR 0xc4u
+#define USAGE_BRAKE 0xc5u
 
 #define BTN_UP (1u << 0)
 #define BTN_DOWN (1u << 1)
@@ -58,9 +68,49 @@ typedef struct parser_workspace_t {
     global_state_t stack[4];
     uint16_t offsets[HIDPAD_MAX_REPORT_LAYOUTS];
     uint8_t offset_ids[HIDPAD_MAX_REPORT_LAYOUTS];
+    uint8_t gamepad_collection[8];
 } parser_workspace_t;
 
 static parser_workspace_t s_parse_work;
+
+/*
+ * ESP32-S31's RISC-V libgcc is not built as PIC, so pulling __divdi3 into a
+ * shared module makes the linker emit unsupported absolute relocations.
+ * Keep the two report-normalization divisions module-local and PIC-safe.
+ */
+static int64_t divide_s64(int64_t numerator, int64_t denominator)
+{
+    uint64_t dividend;
+    uint64_t divisor;
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    uint8_t negative;
+    uint8_t bit;
+
+    if (denominator == 0) {
+        return 0;
+    }
+
+    negative = (uint8_t)((numerator < 0) != (denominator < 0));
+    dividend = numerator < 0
+        ? (uint64_t)(-(numerator + 1)) + 1u
+        : (uint64_t)numerator;
+    divisor = denominator < 0
+        ? (uint64_t)(-(denominator + 1)) + 1u
+        : (uint64_t)denominator;
+
+    for (bit = 0; bit < 64u; ++bit) {
+        remainder = (remainder << 1u) | (dividend >> 63u);
+        dividend <<= 1u;
+        quotient <<= 1u;
+        if (remainder >= divisor) {
+            remainder -= divisor;
+            quotient |= 1u;
+        }
+    }
+
+    return negative ? (int64_t)(~quotient + 1u) : (int64_t)quotient;
+}
 
 static void zero_bytes(void *ptr, size_t len)
 {
@@ -148,7 +198,7 @@ static int16_t normalize_axis(int32_t raw, int32_t min_value, int32_t max_value,
     }
     numerator = (int64_t)raw * 2 - (int64_t)min_value - (int64_t)max_value;
     denominator = (int64_t)max_value - (int64_t)min_value;
-    value = numerator * 32767 / denominator;
+    value = divide_s64(numerator * 32767, denominator);
     if (invert) {
         value = -value;
     }
@@ -163,7 +213,8 @@ static uint16_t normalize_trigger(int32_t raw, int32_t min_value, int32_t max_va
     if (max_value == min_value) {
         return 0;
     }
-    value = ((int64_t)raw - min_value) * 65535 / ((int64_t)max_value - min_value);
+    value = divide_s64(((int64_t)raw - min_value) * 65535,
+                       (int64_t)max_value - min_value);
     if (value < 0) value = 0;
     if (value > 65535) value = 65535;
     return (uint16_t)value;
@@ -231,9 +282,27 @@ static void apply_consumer(hidpad_decoded_report_t *out, uint16_t usage, int pre
 static int field_is_relevant(uint16_t usage_page, uint16_t usage)
 {
     if (usage_page == USAGE_PAGE_BUTTON || usage_page == USAGE_PAGE_CONSUMER) return 1;
+    if (usage_page == USAGE_PAGE_SIMULATION) {
+        return usage == USAGE_ACCELERATOR || usage == USAGE_BRAKE;
+    }
     if (usage_page != USAGE_PAGE_GENERIC_DESKTOP) return 0;
     return usage == USAGE_X || usage == USAGE_Y || usage == USAGE_Z ||
-           usage == USAGE_RX || usage == USAGE_RY || usage == USAGE_RZ || usage == USAGE_HAT;
+           usage == USAGE_RX || usage == USAGE_RY || usage == USAGE_RZ ||
+           usage == USAGE_HAT || usage == USAGE_DPAD_UP ||
+           usage == USAGE_DPAD_DOWN || usage == USAGE_DPAD_RIGHT ||
+           usage == USAGE_DPAD_LEFT;
+}
+
+static int local_is_gamepad_application(const global_state_t *global,
+                                        const local_state_t *local)
+{
+    uint16_t usage_page;
+    uint16_t usage;
+    if (!global || !local || local->usage_count == 0) return 0;
+    split_usage(local->usages[0], global->usage_page, &usage_page, &usage);
+    return usage_page == USAGE_PAGE_GENERIC_DESKTOP &&
+           (usage == USAGE_JOYSTICK || usage == USAGE_GAME_PAD ||
+            usage == USAGE_MULTI_AXIS_CONTROLLER);
 }
 
 static void apply_hat(hidpad_decoded_report_t *out, int32_t raw,
@@ -343,6 +412,7 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
     uint16_t *offsets = s_parse_work.offsets;
     uint8_t *offset_ids = s_parse_work.offset_ids;
     uint8_t offset_count = 0;
+    uint8_t collection_depth = 0;
     size_t index = 0;
     uint8_t i;
     if (!parser || !data || len == 0) return 0;
@@ -381,7 +451,11 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
             switch (item_tag) {
             case 0: global->usage_page = (uint16_t)unsigned_value; break;
             case 1: global->logical_min = signed_value; break;
-            case 2: global->logical_max = signed_value; break;
+            /* HID logical maxima are unsigned when Logical Minimum is
+             * non-negative.  Treating 0xff as -1 breaks the very common
+             * 0..255 axis range used by Android BLE gamepads. */
+            case 2: global->logical_max = global->logical_min < 0 ?
+                                          signed_value : (int32_t)unsigned_value; break;
             case 7: global->report_size = (uint8_t)unsigned_value; break;
             case 8: global->report_id = (uint8_t)unsigned_value; parser->has_report_id = 1; break;
             case 9: global->report_count = (uint8_t)unsigned_value; break;
@@ -416,7 +490,10 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
                 }
                 start_offset = offset ? *offset : 0;
                 bit_len = (uint16_t)global->report_size * global->report_count;
-                if (!is_constant && global->report_size > 0 && global->report_count > 0) {
+                int in_gamepad_collection = collection_depth > 0 &&
+                    s_parse_work.gamepad_collection[collection_depth - 1u] != 0;
+                if (in_gamepad_collection && !is_constant && global->report_size > 0 &&
+                    global->report_count > 0) {
                     for (field_index = 0; field_index < global->report_count; ++field_index) {
                         uint32_t raw_usage = 0;
                         uint16_t usage_page;
@@ -439,10 +516,27 @@ int hidpad_parser_parse(hidpad_report_parser_t *parser, const uint8_t *data, siz
                     }
                 }
                 if (offset) *offset = (uint16_t)(start_offset + bit_len);
-                zero_bytes(local, sizeof(*local));
-            } else if (item_tag == 10u || item_tag == 11u) {
-                zero_bytes(local, sizeof(*local));
+            } else if (item_tag == 10u) {
+                int in_gamepad_collection = collection_depth > 0 &&
+                    s_parse_work.gamepad_collection[collection_depth - 1u] != 0;
+                /* Collection type 1 is Application. Only Generic Desktop
+                 * Joystick/Game Pad/Multi-axis applications describe game
+                 * controls; Digitizer X/Y values must never become sticks. */
+                if ((unsigned_value & 0xffu) == 1u) {
+                    in_gamepad_collection = local_is_gamepad_application(global, local);
+                }
+                if (collection_depth < sizeof(s_parse_work.gamepad_collection)) {
+                    s_parse_work.gamepad_collection[collection_depth++] =
+                        in_gamepad_collection ? 1u : 0u;
+                }
+            } else if (item_tag == 12u) {
+                if (collection_depth > 0) collection_depth--;
             }
+            /* HID local items apply to exactly one following Main item. Clear
+             * them after Input, Output, Feature and Collection items alike so
+             * an output report's Usage list cannot leak into a later input
+             * report (common on full HOGP controllers such as APEX 5). */
+            zero_bytes(local, sizeof(*local));
         }
     }
     for (i = 0; i < offset_count; ++i) set_layout(parser, offset_ids[i], offsets[i]);
@@ -570,6 +664,14 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
     }
     out->report_id = selected_id;
     layout = find_layout(parser, selected_id);
+    /* HOGP normally identifies the report through its characteristic and
+     * omits the Report ID byte. Some otherwise standard controllers include
+     * it anyway. Accept both forms by checking the descriptor-derived length
+     * and the leading ID, even when Report Reference already selected it. */
+    if (selected_id != 0 && parser->has_report_id && layout &&
+        len == layout->total_bytes && data[0] == selected_id) {
+        base_bits = 8;
+    }
     if (layout && layout->field_count > 0) {
         first_field = layout->first_field;
         field_end = (uint16_t)(layout->first_field + layout->field_count);
@@ -592,6 +694,16 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
         } else if (field->usage_page == USAGE_PAGE_CONSUMER) {
             out->valid_mask |= HIDPAD_VALID_CONSUMER_BUTTONS;
             apply_consumer(out, field->variable ? field->usage : (uint16_t)raw, raw != 0);
+        } else if (field->usage_page == USAGE_PAGE_SIMULATION) {
+            /* Match Linux hid-input: Accelerator is ABS_GAS and Brake is
+             * ABS_BRAKE. Gamepads conventionally expose them as RT and LT. */
+            if (field->usage == USAGE_ACCELERATOR) {
+                out->valid_mask |= HIDPAD_VALID_RT;
+                out->rt = normalize_trigger(raw, field->logical_min, field->logical_max);
+            } else if (field->usage == USAGE_BRAKE) {
+                out->valid_mask |= HIDPAD_VALID_LT;
+                out->lt = normalize_trigger(raw, field->logical_min, field->logical_max);
+            }
         } else if (field->usage_page == USAGE_PAGE_GENERIC_DESKTOP) {
             switch (field->usage) {
             case USAGE_X: out->valid_mask |= HIDPAD_VALID_LX; out->lx = normalize_axis(raw, field->logical_min, field->logical_max, 0); break;
@@ -607,6 +719,10 @@ int hidpad_parser_decode(const hidpad_report_parser_t *parser,
                 else { out->valid_mask |= HIDPAD_VALID_RY; out->ry = normalize_axis(raw, field->logical_min, field->logical_max, 1); }
                 break;
             case USAGE_HAT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; apply_hat(out, raw, field->logical_min, field->logical_max); break;
+            case USAGE_DPAD_UP: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; if (raw) out->buttons |= BTN_UP; break;
+            case USAGE_DPAD_DOWN: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; if (raw) out->buttons |= BTN_DOWN; break;
+            case USAGE_DPAD_RIGHT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; if (raw) out->buttons |= BTN_RIGHT; break;
+            case USAGE_DPAD_LEFT: out->valid_mask |= HIDPAD_VALID_GAME_BUTTONS; if (raw) out->buttons |= BTN_LEFT; break;
             default: break;
             }
         }

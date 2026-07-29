@@ -1,0 +1,442 @@
+
+Merging object attributes
+
+
+Discarded input sections
+
+ .text          0x00000000        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .data          0x00000000        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .bss           0x00000000        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.memset   0x00000000       0x12 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+Address of section .text-segment set to 0x0
+LOAD E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+LOAD E:/Espressif/tools/tools/riscv32-esp-elf/esp-16.1.0_20260609/riscv32-esp-elf/bin/../lib/gcc/riscv32-esp-elf/16.1.0/rv32imafc_zicsr_zmmul_zaamo_zalrsc_zca_zcf/ilp32f/libgcc.a
+                0x000000d4                        . = (SEGMENT_START ("text-segment", 0x0) + SIZEOF_HEADERS)
+
+.note.gnu.build-id
+ *(.note.gnu.build-id)
+
+.hash           0x000000d4       0x2c
+ *(.hash)
+ .hash          0x000000d4       0x2c E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.gnu.hash
+ *(.gnu.hash)
+
+.dynsym         0x00000100       0x60
+ *(.dynsym)
+ .dynsym        0x00000100       0x60 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.dynstr         0x00000160       0x46
+ *(.dynstr)
+ .dynstr        0x00000160       0x46 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.gnu.version    0x000001a6        0x0
+ *(.gnu.version)
+ .gnu.version   0x000001a6        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.gnu.version_d  0x000001a8        0x0
+ *(.gnu.version_d)
+ .gnu.version_d
+                0x000001a8        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.gnu.version_r  0x000001a8        0x0
+ *(.gnu.version_r)
+ .gnu.version_r
+                0x000001a8        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.rela.dyn       0x000001a8       0x24
+ *(.rela.init)
+ *(.rela.text .rela.text.* .rela.gnu.linkonce.t.*)
+ *(.rela.fini)
+ *(.rela.rodata .rela.rodata.* .rela.gnu.linkonce.r.*)
+ *(.rela.data .rela.data.* .rela.gnu.linkonce.d.*)
+ .rela.data.rel.ro.local.s_manifest
+                0x000001a8       0x24 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.rela.tdata .rela.tdata.* .rela.gnu.linkonce.td.*)
+ *(.rela.tbss .rela.tbss.* .rela.gnu.linkonce.tb.*)
+ *(.rela.ctors)
+ *(.rela.dtors)
+ *(.rela.got)
+ .rela.got      0x000001cc        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.rela.sdata .rela.sdata.* .rela.gnu.linkonce.s.*)
+ *(.rela.sbss .rela.sbss.* .rela.gnu.linkonce.sb.*)
+ *(.rela.sdata2 .rela.sdata2.* .rela.gnu.linkonce.s2.*)
+ *(.rela.sbss2 .rela.sbss2.* .rela.gnu.linkonce.sb2.*)
+ *(.rela.bss .rela.bss.* .rela.gnu.linkonce.b.*)
+ *(.rela.ifunc)
+
+.rela.plt       0x000001cc        0x0
+ *(.rela.plt)
+ .rela.plt      0x000001cc        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.rela.iplt)
+
+.init
+ *(SORT_NONE(.init))
+
+.plt            0x000001d0        0x0
+ *(.plt)
+ .plt           0x000001d0        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.iplt)
+
+.text           0x000001cc      0x9b2
+ *(.text.unlikely .text.*_unlikely .text.unlikely.*)
+ *(.text.exit .text.exit.*)
+ *(.text.startup .text.startup.*)
+ *(.text.hot .text.hot.*)
+ *(SORT_BY_NAME(.text.sorted.*))
+ *(.text .stub .text.* .gnu.linkonce.t.*)
+ .text.worker_main
+                0x000001cc      0x11e E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.start_worker
+                0x000002ea       0x8a E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.set_function
+                0x00000374       0x3c E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.resolve_required.constprop.0
+                0x000003b0       0x2a E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_start_task
+                0x000003da       0x4c E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_start_ble_open
+                0x00000426       0x62 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_start_poll_once
+                0x00000488       0x62 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_stop_worker
+                0x000004ea       0x7a E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_close_ble
+                0x00000564       0x72 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.l_status
+                0x000005d6      0x1b6 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ .text.module_query_v1
+                0x0000078c        0xa E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x0000078c                module_query_v1
+ .text.module_create_v2
+                0x00000796      0x2c4 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x00000796                module_create_v2
+ .text.module_luaopen_v1
+                0x00000a5a       0xde E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x00000a5a                module_luaopen_v1
+ .text.module_destroy_v1
+                0x00000b38       0x46 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x00000b38                module_destroy_v1
+ *(.gnu.warning)
+
+.fini
+ *(SORT_NONE(.fini))
+                [!provide]                        PROVIDE (__etext = .)
+                [!provide]                        PROVIDE (_etext = .)
+                [!provide]                        PROVIDE (etext = .)
+
+.rodata         0x00000b80      0x1bd
+ *(.rodata .rodata.* .gnu.linkonce.r.*)
+ .rodata.worker_main.str1.4
+                0x00000b80      0x1bd E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                 0x6f (size before relaxing)
+ .rodata.start_worker.str1.4
+                0x00000d3d        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                  0xf (size before relaxing)
+ .rodata.l_status.str1.4
+                0x00000d3d        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                 0xa8 (size before relaxing)
+ .rodata.module_luaopen_v1.str1.4
+                0x00000d3d        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                 0x5c (size before relaxing)
+ .rodata.str1.4
+                0x00000d3d        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                 0x39 (size before relaxing)
+
+.rodata1
+ *(.rodata1)
+
+.eh_frame_hdr
+ *(.eh_frame_hdr)
+ *(.eh_frame_entry .eh_frame_entry.*)
+
+.eh_frame
+ *(.eh_frame)
+ *(.eh_frame.*)
+
+.sframe
+ *(.sframe)
+ *(.sframe.*)
+
+.gcc_except_table
+ *(.gcc_except_table .gcc_except_table.*)
+
+.gnu_extab
+ *(.gnu_extab*)
+
+.exception_ranges
+ *(.exception_ranges*)
+
+.note.build-id
+ *(.note.build-id)
+
+.note.GNU-stack
+                0x00000d3d        0x0
+ *(.note.GNU-stack)
+ .note.GNU-stack
+                0x00000d3d        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.note.gnu.property
+ *(.note.gnu.property)
+
+.note.ABI-tag
+ *(.note.ABI-tag)
+
+.note.package
+ *(.note.package)
+
+.note.dlopen
+ *(.note.dlopen)
+
+.note.netbsd.ident
+ *(.note.netbsd.ident)
+
+.note.openbsd.ident
+ *(.note.openbsd.ident)
+                0x00001d3d                        . = DATA_SEGMENT_ALIGN (CONSTANT (MAXPAGESIZE), CONSTANT (COMMONPAGESIZE))
+
+.eh_frame
+ *(.eh_frame)
+ *(.eh_frame.*)
+
+.sframe
+ *(.sframe)
+ *(.sframe.*)
+
+.gnu_extab
+ *(.gnu_extab)
+
+.gcc_except_table
+ *(.gcc_except_table .gcc_except_table.*)
+
+.exception_ranges
+ *(.exception_ranges*)
+
+.tdata
+ *(.tdata .tdata.* .gnu.linkonce.td.*)
+
+.tbss
+ *(.tbss .tbss.* .gnu.linkonce.tb.*)
+ *(.tcommon)
+
+.preinit_array
+ *(.preinit_array)
+
+.init_array
+ *(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*))
+ *(.init_array EXCLUDE_FILE(*crtend?.o *crtend.o *crtbegin?.o *crtbegin.o) .ctors)
+
+.fini_array
+ *(SORT_BY_INIT_PRIORITY(.fini_array.*) SORT_BY_INIT_PRIORITY(.dtors.*))
+ *(.fini_array EXCLUDE_FILE(*crtend?.o *crtend.o *crtbegin?.o *crtbegin.o) .dtors)
+
+.ctors
+ *crtbegin.o(.ctors)
+ *crtbegin?.o(.ctors)
+ *(EXCLUDE_FILE(*crtend?.o *crtend.o) .ctors)
+ *(SORT_BY_NAME(.ctors.*))
+ *(.ctors)
+
+.dtors
+ *crtbegin.o(.dtors)
+ *crtbegin?.o(.dtors)
+ *(EXCLUDE_FILE(*crtend?.o *crtend.o) .dtors)
+ *(SORT_BY_NAME(.dtors.*))
+ *(.dtors)
+
+.jcr
+ *(.jcr)
+
+.data.rel.ro    0x00001d40       0x20
+ *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*)
+ .data.rel.ro.local.s_manifest
+                0x00001d40       0x20 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*)
+ .data.rel.ro   0x00001d60        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.dynamic        0x00001d60       0x78
+ *(.dynamic)
+ .dynamic       0x00001d60       0x78 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x00001d60                _DYNAMIC
+
+.got            0x00001dd8        0x4
+ *(.got)
+ .got           0x00001dd8        0x4 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                0x00001dd8                _GLOBAL_OFFSET_TABLE_
+ *(.igot)
+                0x00001ddc                        . = DATA_SEGMENT_RELRO_END (., (SIZEOF (.got.plt) >= 0x8)?0x8:0x0)
+
+.got.plt        0x00001ddc        0x0
+ *(.got.plt)
+ .got.plt       0x00001ddc        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.igot.plt)
+
+.data
+ *(.data .data.* .gnu.linkonce.d.*)
+
+.data1
+ *(.data1)
+
+.sdata
+ *(.srodata.cst16)
+ *(.srodata.cst8)
+ *(.srodata.cst4)
+ *(.srodata.cst2)
+ *(.srodata .srodata.*)
+ *(.sdata2 .sdata2.* .gnu.linkonce.s2.*)
+ *(.sdata .sdata.* .gnu.linkonce.s.*)
+                [!provide]                        PROVIDE (_edata = .)
+                [!provide]                        PROVIDE (edata = .)
+                0x00001ddc                        . = ALIGN (ALIGNOF (NEXT_SECTION))
+                [!provide]                        PROVIDE (__bss_start = .)
+
+.sbss
+ *(.sbss2 .sbss2.* .gnu.linkonce.sb2.*)
+ *(.dynsbss)
+ *(.sbss .sbss.* .gnu.linkonce.sb.*)
+ *(.scommon)
+
+.bss            0x00001ddc       0x74
+ *(.dynbss)
+ .dynbss        0x00001ddc        0x0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(.bss .bss.* .gnu.linkonce.b.*)
+ .bss.s_diag    0x00001ddc       0x74 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+ *(COMMON)
+                0x00001e50                        . = ALIGN ((. != 0x0)?0x4:0x1)
+                0x00001e50                        . = ALIGN (0x4)
+                0x00001e50                        . = SEGMENT_START ("ldata-segment", .)
+                0x00001e50                        . = ALIGN (0x4)
+                [!provide]                        PROVIDE (_end = .)
+                [!provide]                        PROVIDE (end = .)
+                0x00001e50                        . = DATA_SEGMENT_END (.)
+
+.stab
+ *(.stab)
+
+.stabstr
+ *(.stabstr)
+
+.stab.excl
+ *(.stab.excl)
+
+.stab.exclstr
+ *(.stab.exclstr)
+
+.stab.index
+ *(.stab.index)
+
+.stab.indexstr
+ *(.stab.indexstr)
+
+.comment        0x00000000       0x2f
+ *(.comment)
+ .comment       0x00000000       0x2f E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+                                 0x30 (size before relaxing)
+
+.riscv.attributes
+                0x00000000       0xa0
+ .riscv.attributes
+                0x00000000       0xa0 E:\cubicsrc\APPS\hidpad\build_diag\s31_task_ble_diag_module.o
+
+.gnu.build.attributes
+ *(.gnu.build.attributes .gnu.build.attributes.*)
+
+.debug
+ *(.debug)
+
+.line
+ *(.line)
+
+.debug_srcinfo
+ *(.debug_srcinfo)
+
+.debug_sfnames
+ *(.debug_sfnames)
+
+.debug_aranges
+ *(.debug_aranges)
+
+.debug_pubnames
+ *(.debug_pubnames)
+
+.debug_info
+ *(.debug_info .gnu.linkonce.wi.*)
+
+.debug_abbrev
+ *(.debug_abbrev)
+
+.debug_line
+ *(.debug_line .debug_line.* .debug_line_end)
+
+.debug_frame
+ *(.debug_frame)
+
+.debug_str
+ *(.debug_str)
+
+.debug_loc
+ *(.debug_loc)
+
+.debug_macinfo
+ *(.debug_macinfo)
+
+.debug_weaknames
+ *(.debug_weaknames)
+
+.debug_funcnames
+ *(.debug_funcnames)
+
+.debug_typenames
+ *(.debug_typenames)
+
+.debug_varnames
+ *(.debug_varnames)
+
+.debug_pubtypes
+ *(.debug_pubtypes)
+
+.debug_ranges
+ *(.debug_ranges)
+
+.debug_addr
+ *(.debug_addr)
+
+.debug_line_str
+ *(.debug_line_str)
+
+.debug_loclists
+ *(.debug_loclists)
+
+.debug_macro
+ *(.debug_macro)
+
+.debug_names
+ *(.debug_names)
+
+.debug_rnglists
+ *(.debug_rnglists)
+
+.debug_str_offsets
+ *(.debug_str_offsets)
+
+.debug_sup
+ *(.debug_sup)
+
+.gnu.attributes
+ *(.gnu.attributes)
+
+/DISCARD/
+ *(.note.GNU-stack)
+ *(.gnu_debuglink)
+ *(.gnu.lto_*)
+ *(.gnu_object_only)
+OUTPUT(E:\cubicsrc\APPS\hidpad\build_diag\s31diag.so elf32-littleriscv)

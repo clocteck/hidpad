@@ -29,6 +29,7 @@ set(HIDPAD_COMPILE_FLAGS
     -ffunction-sections
     -fno-jump-tables
     -fno-tree-switch-conversion
+    -fno-tree-loop-distribute-patterns
     -fconserve-stack
     -fno-builtin-memcpy
     -fno-builtin-memmove

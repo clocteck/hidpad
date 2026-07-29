@@ -29,6 +29,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -ffunction-sections
     -fno-jump-tables
     -fno-tree-switch-conversion
+    -fno-tree-loop-distribute-patterns
     -fconserve-stack
     -fno-builtin-memcpy
     -fno-builtin-memmove
