@@ -38,14 +38,15 @@ typedef struct hidpad_decoded_report_t {
     uint8_t report_id;
 } hidpad_decoded_report_t;
 
+/* Group 32/16/8-bit fields: 20 bytes instead of 24, no packed/unaligned access. */
 typedef struct hidpad_report_field_t {
-    uint8_t report_id;
-    uint16_t offset_bits;
-    uint8_t size_bits;
-    uint16_t usage_page;
-    uint16_t usage;
     int32_t logical_min;
     int32_t logical_max;
+    uint16_t offset_bits;
+    uint16_t usage_page;
+    uint16_t usage;
+    uint8_t report_id;
+    uint8_t size_bits;
     uint8_t variable;
 } hidpad_report_field_t;
 

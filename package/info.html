@@ -4,205 +4,39 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>HID Pad 使用说明</title>
+<title>HID Pad · 使用说明</title>
 <style>
-:root{
-  --bg:#f5f8fc;
-  --surface:#fff;
-  --soft:#eef5ff;
-  --line:#dce6f1;
-  --text:#182332;
-  --muted:#68798c;
-  --blue:#3377d5;
-  --green:#247a59;
-  --green-soft:#eaf7f0;
-  --orange:#9d6019;
-  --orange-soft:#fff3e2;
-  --shadow:0 18px 48px rgba(39,70,112,.08);
-  --radius:18px;
-}
-*{box-sizing:border-box}
-html,body{min-height:100%}
-body{
-  margin:0;
-  color:var(--text);
-  background:
-    radial-gradient(circle at top left,rgba(51,119,213,.12),transparent 30%),
-    radial-gradient(circle at top right,rgba(57,156,112,.08),transparent 26%),
-    linear-gradient(180deg,#fcfdff,var(--bg));
-  font:15px/1.65 "Segoe UI Variable","Aptos","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-}
-a{color:#2f67b7;text-decoration:none}
-a:hover{text-decoration:underline}
-code{
-  padding:2px 7px;
-  border:1px solid var(--line);
-  border-radius:8px;
-  background:#f6f9fc;
-  color:#315f98;
-  font-family:"Cascadia Code","Consolas",monospace;
-  word-break:break-all;
-}
-.shell{width:min(920px,calc(100% - 24px));margin:0 auto;padding:22px 0 30px}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:14px}
-.brand{display:flex;align-items:center;gap:13px;min-width:0}
-.icon{
-  width:56px;height:56px;position:relative;flex:0 0 auto;
-  border:1px solid rgba(51,119,213,.2);border-radius:17px;
-  background:linear-gradient(145deg,#fff,var(--soft));box-shadow:var(--shadow)
-}
-.icon:before{
-  content:"";position:absolute;left:10px;right:10px;top:18px;height:23px;
-  border:3px solid var(--blue);border-radius:10px 10px 14px 14px;transform:rotate(-3deg)
-}
-.icon:after{
-  content:"+  •";position:absolute;left:16px;top:17px;color:var(--blue);
-  font-size:15px;font-weight:900;letter-spacing:7px;white-space:pre
-}
-.brand h1{margin:0;font-size:clamp(27px,4vw,35px);line-height:1.05}
-.brand p{margin:5px 0 0;color:var(--muted)}
-.version{
-  flex:0 0 auto;padding:8px 12px;border:1px solid #cfe6d9;border-radius:999px;
-  background:var(--green-soft);color:var(--green);font-weight:800
-}
-.card{border:1px solid var(--line);border-radius:var(--radius);background:rgba(255,255,255,.95);box-shadow:var(--shadow)}
-.hero{padding:20px}
-.hero h2{margin:0 0 7px;font-size:22px}
-.hero p{margin:0;color:var(--muted)}
-.pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}
-.pill{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:#fff;font-weight:750}
-.pill.fast{border-color:#cfe6d9;background:var(--green-soft);color:var(--green)}
-.primary-link{
-  display:inline-flex;align-items:center;min-height:42px;margin-top:16px;padding:0 15px;
-  border-radius:11px;background:var(--blue);color:#fff;font-weight:800
-}
-.primary-link:hover{text-decoration:none;filter:brightness(.96)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
-.section{padding:18px}
-.section.wide{grid-column:1/-1}
-.section-title{margin:0 0 13px}
-.section-title small{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
-.section-title strong{display:block;margin-top:3px;font-size:20px;line-height:1.2}
-.steps{display:grid;gap:10px;counter-reset:step}
-.step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:10px;align-items:start}
-.step:before{
-  counter-increment:step;content:counter(step);display:grid;place-items:center;width:30px;height:30px;
-  border-radius:10px;background:var(--soft);color:var(--blue);font-weight:900
-}
-.step strong{display:block;margin-bottom:2px}
-.step span{color:var(--muted)}
-ul{margin:0;padding-left:19px;color:var(--muted)}
-li{margin:7px 0}
-.fact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.fact{padding:12px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fff,#f7fafe)}
-.fact span{display:block;color:var(--muted);font-size:12px;font-weight:750}
-.fact strong{display:block;margin-top:5px;font-size:17px}
-.note{margin-top:12px;padding:12px 13px;border-radius:13px;background:var(--orange-soft);color:var(--orange)}
-.mapping{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px}
-.mapping div{display:grid;grid-template-columns:105px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
-.mapping span{color:var(--muted)}
-.footer{margin-top:14px;padding:3px 4px;text-align:center;color:#8290a0;font-size:12px}
-@media(max-width:720px){
-  .topbar{align-items:flex-start}.version{margin-top:5px}.grid{grid-template-columns:1fr}
-  .section.wide{grid-column:auto}.fact-grid,.mapping{grid-template-columns:1fr}.mapping div{grid-template-columns:96px 1fr}
-}
+:root{color-scheme:light;--bg:#f6f7f2;--ink:#21392e;--muted:#69786f;--line:#dce3d9;--green:#276749}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 system-ui,"Microsoft YaHei",sans-serif}main{max-width:860px;margin:auto;padding:22px 20px 36px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}h1{font-size:21px;margin:0}h2{font-size:16px;margin:0 0 10px}p{margin:8px 0}section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:14px}.meta,.hint{color:var(--muted);font-size:12px}.language{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}select{font:inherit;color:var(--ink);background:white;border:1px solid var(--line);border-radius:8px;min-height:36px;padding:6px 9px}a{color:var(--green)}.open{display:inline-block;background:var(--green);color:#fff;text-decoration:none;padding:9px 14px;border-radius:9px;margin-top:8px}ol,ul{padding-left:21px;margin:8px 0}li{margin:7px 0}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px 8px}th:first-child,td:first-child{padding-left:0;width:34%}code{font:12px ui-monospace,Consolas,monospace;overflow-wrap:anywhere}footer{font-size:12px;color:var(--muted)}:focus-visible{outline:3px solid #80aa66;outline-offset:3px}@media(max-width:520px){main{padding:15px 12px}header{align-items:flex-start;flex-wrap:wrap}section{padding:16px}select{font-size:16px}th:first-child,td:first-child{width:38%}}
 </style>
 </head>
 <body>
-<main class="shell">
-  <header class="topbar">
-    <div class="brand">
-      <div class="icon" aria-hidden="true"></div>
-      <div>
-        <h1>HID Pad</h1>
-        <p>BLE 手柄连接、校准与按键映射服务</p>
-      </div>
-    </div>
-    <span class="version">v1.0.0</span>
-  </header>
-
-  <section class="card hero">
-    <h2>让一个 BLE 手柄供多个应用使用</h2>
-    <p>服务独占管理 BLE 连接，将标准化后的按键、摇杆和扳机状态发布到系统 <code>controller</code> 总线。Retro-Go 等应用无需再次连接手柄。</p>
-    <div class="pills">
-      <span class="pill">Xbox BLE</span>
-      <span class="pill">ShanWan Q34</span>
-      <span class="pill">ShanWan Q36</span>
-      <span class="pill fast">10ms 服务轮询</span>
-    </div>
-    <a class="primary-link" href="/hidpad">打开手柄控制页</a>
-  </section>
-
-  <div class="grid">
-    <section class="card section wide">
-      <h2 class="section-title"><small>Quick start</small><strong>首次连接</strong></h2>
-      <div class="steps">
-        <div class="step"><div><strong>让手柄进入配对模式</strong><span>长按手柄配对键，确认指示灯快速闪烁。已经连接手机或电脑时，请先从原设备断开。</span></div></div>
-        <div class="step"><div><strong>打开控制页并扫描</strong><span>进入 <code>/hidpad</code>，点击“扫描手柄”，等待设备名称和信号强度出现在列表中。</span></div></div>
-        <div class="step"><div><strong>选择设备并连接</strong><span>选择目标手柄，点击“连接并配对”。状态变成“已连接”后，按键和摇杆应在实时状态区域响应。</span></div></div>
-        <div class="step"><div><strong>启动使用手柄的应用</strong><span>保持 HID Pad 服务运行，再打开 Retro-Go 等消费者应用。输入源名称为 <code>ble-main</code>。</span></div></div>
-      </div>
-    </section>
-
-    <section class="card section">
-      <h2 class="section-title"><small>Calibration</small><strong>摇杆与扳机校准</strong></h2>
-      <ul>
-        <li>先连接手柄，并让两个摇杆保持在中心位置。</li>
-        <li>点击“开始采样”，再把两个摇杆分别转满一圈。</li>
-        <li>将 LT、RT 扳机各按到底并松开。</li>
-        <li>点击“保存校准”，再按需要调整中心死区。</li>
-      </ul>
-      <div class="note">漂移时适当增大死区；不要在摇杆偏离中心时开始采样。</div>
-    </section>
-
-    <section class="card section">
-      <h2 class="section-title"><small>Mapping</small><strong>按键映射</strong></h2>
-      <ul>
-        <li>控制页左侧名称是应用最终收到的目标键。</li>
-        <li>右侧选择手柄原始键，可交换 A/B、X/Y 或肩键。</li>
-        <li>选择“不映射”可屏蔽某个目标键。</li>
-        <li>修改完成后点击“保存映射”。</li>
-      </ul>
-      <div class="note">恢复默认会同时重置映射、死区和校准数据。</div>
-    </section>
-
-    <section class="card section wide">
-      <h2 class="section-title"><small>Input</small><strong>默认输出约定</strong></h2>
-      <div class="mapping">
-        <div><strong>方向</strong><span>D-pad 与左摇杆</span></div>
-        <div><strong>A / B / X / Y</strong><span>同名标准游戏按键</span></div>
-        <div><strong>L / R</strong><span>LB / RB 或 L1 / R1</span></div>
-        <div><strong>SELECT</strong><span>View / Select</span></div>
-        <div><strong>START</strong><span>Menu / Start</span></div>
-        <div><strong>HOME</strong><span>Guide / Home</span></div>
-      </div>
-    </section>
-
-    <section class="card section">
-      <h2 class="section-title"><small>Latency</small><strong>低延迟设置</strong></h2>
-      <div class="fact-grid">
-        <div class="fact"><span>服务轮询</span><strong>10–50ms 自适应</strong></div>
-        <div class="fact"><span>BLE 请求间隔</span><strong>8.75–30ms</strong></div>
-        <div class="fact"><span>Slave latency</span><strong>0</strong></div>
-      </div>
-      <p class="note">实际连接间隔由主机和手柄协商，某些手柄可能选择更保守的参数。</p>
-    </section>
-
-    <section class="card section">
-      <h2 class="section-title"><small>Troubleshooting</small><strong>连接问题排查</strong></h2>
-      <ul>
-        <li>扫描不到：重新进入配对模式，并让手柄靠近设备。</li>
-        <li>连接后无输入：断开后执行“重新配对当前”。</li>
-        <li>按键错位：恢复默认映射后重新配置。</li>
-        <li>摇杆漂移：重新校准并适当增加中心死区。</li>
-      </ul>
-    </section>
-  </div>
-
-  <footer class="footer">
-    <a href="https://github.com/clocteck/hidpad" target="_blank" rel="noreferrer noopener">github.com/clocteck/hidpad</a>
-    · 服务 App v1.0.0 · 兼容 Xbox / Q34 / Q36
-  </footer>
+<main>
+<header><div><h1 data-t="title">HID Pad 使用说明</h1><div class="meta">v1.1.0</div></div><label class="language" for="language"><span data-t="language">语言</span><select id="language"><option value="device" data-t="follow">跟随设备</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="en">English</option><option value="ja">日本語</option></select></label></header>
+<section><p data-t="intro">连接一个 BLE 手柄，统一提供按键、双摇杆和扳机输入，支持校准、死区和按键映射。</p><a class="open" href="/hidpad/" data-t="open">打开手柄页面</a></section>
+<section><h2 data-t="start">连接与使用</h2><ol><li data-t="step1">让手柄进入 BLE 配对模式；如果已连接手机或电脑，先从原设备断开。</li><li data-t="step2">打开手柄页面，点击“扫描”，选择设备并点击“连接手柄”。</li><li data-t="step3">等待“已连接 / 输入就绪”，检查按键和摇杆响应，再打开支持手柄的应用。</li></ol><ul><li data-t="auto">“自动连接手柄”默认开启。成功连接的设备会被记住，启动或意外掉线后自动尝试连接。</li><li data-t="disconnect">手动“断开连接”会暂停自动重连，方便更换手柄；关闭自动连接后仍可手动扫描、连接。</li><li data-t="calibrate">校准前松开摇杆和扳机。点击“开始校准”，转动摇杆至边缘、按到底扳机，再“保存校准”。</li><li data-t="mapping">按键映射左侧是应用收到的按键，右侧是触发它的手柄按键。修改后点击“保存映射”。</li></ul><p class="hint" data-t="restore">恢复默认会重置校准、死区、映射和首选设备，并开启自动连接。</p></section>
+<section><h2 data-t="support">已有协议适配</h2><table><thead><tr><th data-t="controller">手柄 / 模式</th><th data-t="scope">支持范围</th></tr></thead><tbody><tr><td>Xbox BLE</td><td data-t="xbox">主要按键、双摇杆和扳机；包含 Elite 2 的基础输入，不含拨片和震动。</td></tr><tr><td>Q34 / Q34U / Q36</td><td data-t="q34">标准 HID 描述符及部分 ShanWan 10 字节报告。</td></tr><tr><td data-t="flydigiName">飞智 BLE HID / 安卓智连</td><td data-t="flydigi">包含八爪鱼 5 的协议适配；其他型号需使用相同服务和输入协议。</td></tr><tr><td data-t="btpName">北通 BFM</td><td data-t="btp">包含 KP20D 的 HID 输入、厂商会话与保活适配。</td></tr><tr><td data-t="genericName">通用 BLE HID 手柄</td><td data-t="generic">按 Report Map 解析输入；是否可用取决于实际描述符与报告格式。</td></tr></tbody></table><p class="hint" data-t="limits">当前服务不接入经典蓝牙 HID、USB 或 2.4G 接收器。扫描到名称不代表完整兼容；Q37 Pro D 档和小鸡 Cyclone 2 尚未确认兼容。</p></section>
+<section><h2 data-t="help">常见问题</h2><ul><li data-t="missing">扫描不到：确认该档位使用 BLE，并重新进入配对模式。</li><li data-t="noInput">连接后无输入：记录手柄型号、档位和页面报错，可能需要协议适配。</li><li data-t="wrong">按键错位：检查映射；摇杆漂移：重新校准并调高死区。</li></ul><p class="hint" data-t="storage">配置保存在设备的 /sd/apps/hidpad/config.json。更新应用时保留此文件。</p></section>
+<footer><a href="https://github.com/clocteck/hidpad" target="_blank" rel="noopener noreferrer" data-t="repo">项目源码与适配说明</a></footer>
 </main>
+<script>
+'use strict';
+const TEXT={
+'zh-CN':{title:'HID Pad 使用说明',language:'语言',follow:'跟随设备',intro:'连接一个 BLE 手柄，统一提供按键、双摇杆和扳机输入，支持校准、死区和按键映射。',open:'打开手柄页面',start:'连接与使用',step1:'让手柄进入 BLE 配对模式；如果已连接手机或电脑，先从原设备断开。',step2:'打开手柄页面，点击“扫描”，选择设备并点击“连接手柄”。',step3:'等待“已连接 / 输入就绪”，检查按键和摇杆响应，再打开支持手柄的应用。',auto:'“自动连接手柄”默认开启。成功连接的设备会被记住，启动或意外掉线后自动尝试连接。',disconnect:'手动“断开连接”会暂停自动重连，方便更换手柄；关闭自动连接后仍可手动扫描、连接。',calibrate:'校准前松开摇杆和扳机。点击“开始校准”，转动摇杆至边缘、按到底扳机，再“保存校准”。',mapping:'按键映射左侧是应用收到的按键，右侧是触发它的手柄按键。修改后点击“保存映射”。',restore:'恢复默认会重置校准、死区、映射和首选设备，并开启自动连接。',support:'已有协议适配',controller:'手柄 / 模式',scope:'支持范围',xbox:'主要按键、双摇杆和扳机；包含 Elite 2 的基础输入，不含拨片和震动。',q34:'标准 HID 描述符及部分 ShanWan 10 字节报告。',flydigiName:'飞智 BLE HID / 安卓智连',flydigi:'包含八爪鱼 5 的协议适配；其他型号需使用相同服务和输入协议。',btpName:'北通 BFM',btp:'包含 KP20D 的 HID 输入、厂商会话与保活适配。',genericName:'通用 BLE HID 手柄',generic:'按 Report Map 解析输入；是否可用取决于实际描述符与报告格式。',limits:'当前服务不接入经典蓝牙 HID、USB 或 2.4G 接收器。扫描到名称不代表完整兼容；Q37 Pro D 档和小鸡 Cyclone 2 尚未确认兼容。',help:'常见问题',missing:'扫描不到：确认该档位使用 BLE，并重新进入配对模式。',noInput:'连接后无输入：记录手柄型号、档位和页面报错，可能需要协议适配。',wrong:'按键错位：检查映射；摇杆漂移：重新校准并调高死区。',storage:'配置保存在设备的 /sd/apps/hidpad/config.json。更新应用时保留此文件。',repo:'项目源码与适配说明'},
+'zh-TW':{title:'HID Pad 使用說明',language:'語言',follow:'跟隨裝置',intro:'連接一個 BLE 手把，統一提供按鍵、雙搖桿和扳機輸入，支援校準、死區和按鍵映射。',open:'開啟手把頁面',start:'連線與使用',step1:'讓手把進入 BLE 配對模式；若已連接手機或電腦，先從原裝置中斷連線。',step2:'開啟手把頁面，點選「掃描」，選擇裝置並點選「連接手把」。',step3:'等待「已連線 / 輸入就緒」，檢查按鍵和搖桿回應，再開啟支援手把的應用。',auto:'「自動連接手把」預設開啟。成功連接的裝置會被記住，啟動或意外斷線後自動嘗試連接。',disconnect:'手動「中斷連線」會暫停自動重連，方便更換手把；關閉自動連線後仍可手動掃描、連接。',calibrate:'校準前放開搖桿和扳機。點選「開始校準」，轉動搖桿至邊緣、將扳機按到底，再「儲存校準」。',mapping:'左側是應用收到的按鍵，右側是觸發它的手把按鍵。修改後點選「儲存映射」。',restore:'恢復預設會重設校準、死區、映射和偏好裝置，並開啟自動連線。',support:'已有協定適配',controller:'手把 / 模式',scope:'支援範圍',xbox:'主要按鍵、雙搖桿和扳機；包含 Elite 2 的基本輸入，不含撥片和震動。',q34:'標準 HID 描述符及部分 ShanWan 10 位元組報告。',flydigiName:'飛智 BLE HID / Android 智連',flydigi:'包含八爪魚 5 的協定適配；其他型號需使用相同服務和輸入協定。',btpName:'北通 BFM',btp:'包含 KP20D 的 HID 輸入、廠商連線程序與保活適配。',genericName:'通用 BLE HID 手把',generic:'依 Report Map 解析輸入；是否可用取決於實際描述符與報告格式。',limits:'目前不接入經典藍牙 HID、USB 或 2.4G 接收器。掃描到名稱不代表完整相容；Q37 Pro D 模式和小雞 Cyclone 2 尚未確認相容。',help:'常見問題',missing:'掃描不到：確認此模式使用 BLE，並重新進入配對模式。',noInput:'連線後無輸入：記錄手把型號、模式和頁面錯誤，可能需要協定適配。',wrong:'按鍵錯位：檢查映射；搖桿漂移：重新校準並調高死區。',storage:'設定儲存在裝置的 /sd/apps/hidpad/config.json。更新應用時保留此檔案。',repo:'專案原始碼與適配說明'},
+en:{title:'HID Pad instructions',language:'Language',follow:'Device language',intro:'Connect one BLE controller and share its buttons, sticks and triggers with apps. Includes calibration, deadzone and button mapping.',open:'Open controller page',start:'Connect and use',step1:'Enter BLE pairing mode. Disconnect the controller from its previous phone or computer first.',step2:'Open the controller page, select Scan, choose the device and select Connect controller.',step3:'Wait for Connected / Input ready, check buttons and sticks, then open an app that supports controllers.',auto:'Auto-connect is enabled by default. A successfully connected device is remembered and retried on startup or after an unexpected disconnect.',disconnect:'Manual Disconnect pauses automatic reconnection so you can switch controllers. Manual scanning and connection remain available with auto-connect off.',calibrate:'Release sticks and triggers before Start calibration. Move both sticks to their edges, fully press both triggers, then Save calibration.',mapping:'The left side is the app button; the right side selects the controller button that activates it. Select Save mapping after changes.',restore:'Restore defaults resets calibration, deadzone, mapping and the preferred device, and enables auto-connect.',support:'Implemented protocol support',controller:'Controller / mode',scope:'Scope',xbox:'Main buttons, sticks and triggers, including Elite 2 basic input. No paddles or rumble.',q34:'Standard HID descriptors and selected ShanWan 10-byte reports.',flydigiName:'Flydigi BLE HID / Android smart mode',flydigi:'Includes APEX 5 protocol handling. Other models must use compatible services and input formats.',btpName:'BTP / BETOP BFM',btp:'Includes KP20D HID input, vendor session and keepalive handling.',genericName:'Generic BLE HID controllers',generic:'Input is decoded from the Report Map. Compatibility depends on the actual descriptor and report format.',limits:'This service does not connect through Classic Bluetooth HID, USB or 2.4 GHz receivers. Name recognition is not full compatibility. Q37 Pro D mode and GameSir Cyclone 2 remain unverified.',help:'Troubleshooting',missing:'Not found: confirm the selected mode uses BLE and re-enter pairing mode.',noInput:'Connected without input: record the model, mode and displayed error; protocol adaptation may be needed.',wrong:'Wrong buttons: check mapping. Stick drift: recalibrate and increase the deadzone.',storage:'Settings are saved in /sd/apps/hidpad/config.json on the device. Keep this file when updating.',repo:'Source code and controller adaptation'},
+ja:{title:'HID Pad 使用方法',language:'言語',follow:'デバイスの設定',intro:'BLE コントローラーを1台接続し、ボタン・スティック・トリガーの入力をアプリで共有します。調整、デッドゾーン、ボタン割り当てに対応します。',open:'コントローラー画面を開く',start:'接続と使用',step1:'BLE ペアリングモードにします。スマートフォンや PC に接続中の場合は、先に切断してください。',step2:'コントローラー画面で「スキャン」を押し、デバイスを選んで「接続する」を押します。',step3:'「接続済み / 入力準備完了」を待ち、ボタンとスティックを確認してから対応アプリを開きます。',auto:'自動接続は初期設定で有効です。接続に成功したデバイスを記憶し、起動時や予期しない切断後に再接続します。',disconnect:'手動の「切断」は自動再接続を一時停止します。自動接続がオフでも手動でスキャン・接続できます。',calibrate:'スティックとトリガーを離して「調整を開始」を押します。両スティックを端まで動かし、両トリガーを最後まで押して「調整を保存」を押します。',mapping:'左側はアプリのボタン、右側はそれを操作するコントローラーのボタンです。変更後は「割り当てを保存」を押します。',restore:'初期設定に戻すと、調整、デッドゾーン、割り当て、優先デバイスがリセットされ、自動接続が有効になります。',support:'実装済みのプロトコル',controller:'コントローラー / モード',scope:'対応範囲',xbox:'主要ボタン、両スティック、トリガーに対応。Elite 2 の基本入力を含みます。パドルや振動には非対応です。',q34:'標準 HID 記述子と一部の ShanWan 10 バイトレポート。',flydigiName:'Flydigi BLE HID / Android スマートモード',flydigi:'APEX 5 のプロトコル処理を含みます。他モデルはサービスと入力形式の互換性が必要です。',btpName:'BTP / BETOP BFM',btp:'KP20D の HID 入力、ベンダーセッション、キープアライブを含みます。',genericName:'汎用 BLE HID コントローラー',generic:'Report Map から入力を解析します。実際の記述子とレポート形式により互換性が異なります。',limits:'Classic Bluetooth HID、USB、2.4 GHz レシーバーには接続しません。名前の認識だけでは互換性を保証できません。Q37 Pro D モードと GameSir Cyclone 2 は未確認です。',help:'よくある問題',missing:'見つからない：選択したモードが BLE を使用するか確認し、再度ペアリングモードにしてください。',noInput:'接続後に入力がない：モデル、モード、画面のエラーを記録してください。プロトコルの追加対応が必要な場合があります。',wrong:'ボタンが違う：割り当てを確認してください。ドリフト：再調整してデッドゾーンを上げてください。',storage:'設定はデバイスの /sd/apps/hidpad/config.json に保存します。更新時にこのファイルを残してください。',repo:'ソースコードと追加対応の説明'}
+};
+const select=document.getElementById('language');
+let deviceLanguage='zh-CN',choice='device';
+try{choice=localStorage.getItem('hidpad.language')||'device';}catch{}
+if(choice!=='device'&&!TEXT[choice])choice='device';
+select.value=choice;
+function normalize(value){const v=String(value||'').toLowerCase().replace(/_/g,'-');if(/^en(?:-|$)/.test(v))return'en';if(/^ja(?:-|$)/.test(v))return'ja';if(/^zh-(?:tw|hk|mo|hant)(?:-|$)/.test(v))return'zh-TW';return'zh-CN';}
+function render(){const language=choice==='device'?deviceLanguage:choice;document.documentElement.lang=language;document.title=TEXT[language].title;document.querySelectorAll('[data-t]').forEach(el=>el.textContent=TEXT[language][el.dataset.t]);}
+select.onchange=()=>{choice=select.value;try{localStorage.setItem('hidpad.language',choice);}catch{}render();};
+async function readDeviceLanguage(){for(const path of ['/sd/settings.json','/sd/apps/settings.json']){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/system/fs/file?path='+encodeURIComponent(path),{cache:'no-store',signal:controller.signal});if(!r.ok)continue;const doc=await r.json();const value=doc&&(doc.language||doc.locale||doc.lang);if(typeof value==='string'&&value){deviceLanguage=normalize(value);break;}}catch{}finally{clearTimeout(timer);}}render();}
+render();readDeviceLanguage();
+</script>
 </body>
 </html>

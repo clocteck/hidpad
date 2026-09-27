@@ -1,5 +1,5 @@
 local APP = {
-  VERSION = "1.0.0",
+  VERSION = "1.1.0",
   APP_DIR = "/sd/apps/hidpad",
   MODULE_PATH = "/sd/apps/hidpad/modules/hidpad.so",
   CONFIG_PATH = "/sd/apps/hidpad/config.json",
@@ -9,7 +9,7 @@ local APP = {
   ROUTE_BASE = "/hidpad",
   POLL_READY_MS = 10,
   POLL_SCAN_MS = 20,
-  POLL_IDLE_MS = 50,
+  POLL_IDLE_MS = 1000,
   EVENT_MODE = false,
   DEBUG_BUTTONS = false,
   routes = {},
@@ -62,6 +62,7 @@ local function default_config()
   return {
     version = 2,
     enabled = true,
+    auto_connect = true,
     preferred_address = "",
     preferred_addr_type = 0,
     preferred_profile = "",
@@ -89,6 +90,8 @@ local S = {
   web_button_events = 0,
   last_output = nil,
   last_error = nil,
+  config_error = nil,
+  last_completed_command = 0,
 }
 
 local function rebuild_mapping_bits()
@@ -133,9 +136,36 @@ local function json_decode(raw)
   return value, nil
 end
 
+local function normalize_language(value)
+  local lang = tostring(value or ""):lower():gsub("_", "-")
+  if lang == "en" or lang:match("^en%-") then return "en" end
+  if lang == "ja" or lang:match("^ja%-") then return "ja" end
+  if lang == "zh-tw" or lang == "zh-hk" or lang == "zh-mo"
+      or lang:match("^zh%-hant") then return "zh-TW" end
+  return "zh-CN"
+end
+
+local function read_language()
+  -- Root-level settings take precedence; existing Holo apps use /sd/apps.
+  -- Never write to shared settings from the controller page.
+  for _, path in ipairs({ "/sd/settings.json", "/sd/apps/settings.json" }) do
+    local ok, raw = pcall(function() return file.getcontents(path) end)
+    if ok and type(raw) == "string" and raw ~= "" then
+      local codec = json or sjson
+      local decoded, doc = pcall(function() return codec.decode(raw) end)
+      if decoded and type(doc) == "table" then
+        local value = doc.language or doc.locale or doc.lang
+        if type(value) == "string" and value ~= "" then return normalize_language(value) end
+      end
+    end
+  end
+  return "zh-CN"
+end
+
 local function merge_config(doc)
   if type(doc) ~= "table" then return end
   if type(doc.enabled) == "boolean" then S.config.enabled = doc.enabled end
+  if type(doc.auto_connect) == "boolean" then S.config.auto_connect = doc.auto_connect end
   S.config.deadzone = clamp(doc.deadzone or S.config.deadzone, 0, 16000)
   if type(doc.preferred_address) == "string" and #doc.preferred_address <= 17 then
     S.config.preferred_address = doc.preferred_address
@@ -194,10 +224,16 @@ end
 
 local function save_config()
   local raw, err = json_encode(S.config)
-  if not raw then return false, err end
-  if not file or not file.putcontents then return false, "file.putcontents missing" end
+  if not raw then S.config_error = err; return false, err end
+  if not file or not file.putcontents then
+    S.config_error = "file.putcontents missing"; return false, S.config_error
+  end
   local ok, result = pcall(function() return file.putcontents(APP.CONFIG_PATH, raw) end)
-  if not ok or result == false then return false, tostring(result or "write failed") end
+  if not ok or result == false then
+    S.config_error = "配置保存失败: " .. tostring(result or "write failed")
+    return false, S.config_error
+  end
+  S.config_error = nil
   return true, nil
 end
 
@@ -282,7 +318,7 @@ local function sample_calibration(raw)
 end
 
 local function begin_calibration()
-  if not S.raw.connected then return false, "请先连接手柄" end
+  if not S.raw.ready then return false, "请先连接手柄" end
   local axes = {}
   for _, name in ipairs({ "lx", "ly", "rx", "ry" }) do
     local value = clamp(S.raw[name], -32768, 32767)
@@ -370,7 +406,16 @@ local function driver_call(name, ...)
   local ok, result, err = pcall(fn, ...)
   if not ok then return false, tostring(result) end
   if result == nil or result == false then return false, tostring(err or "driver failed") end
-  return true, result
+  return true, err -- Optional command id is the driver's second result.
+end
+
+local function set_auto_connect(enabled)
+  if not S.driver then return false, S.driver_error or "hidpad.so 未加载" end
+  if type(S.driver.set_auto_connect) ~= "function" then
+    if enabled then return true end -- Existing modules retain their original default.
+    return false, "auto_connect requires updated hidpad.so"
+  end
+  return driver_call("set_auto_connect", enabled and 1 or 0)
 end
 
 local function update_preferred(address, addr_type, profile, name)
@@ -382,13 +427,8 @@ end
 
 local function set_driver_preferred()
   if not S.driver or type(S.driver.set_preferred) ~= "function" then return true end
-  local ok, err = pcall(S.driver.set_preferred,
-    S.config.preferred_address or "",
-    S.config.preferred_addr_type or 0,
-    S.config.preferred_profile or "",
-    S.config.preferred_name or "")
-  if not ok then log("set preferred failed", tostring(err)) end
-  return ok
+  return driver_call("set_preferred", S.config.preferred_address or "",
+    S.config.preferred_addr_type or 0, S.config.preferred_profile or "", S.config.preferred_name or "")
 end
 
 local function remember_ready_device(raw)
@@ -405,6 +445,39 @@ local function remember_ready_device(raw)
   set_driver_preferred()
   local ok, err = save_config()
   if not ok then S.last_error = "保存首选手柄失败: " .. tostring(err) end
+end
+
+local function current_error()
+  if S.config_error then return S.config_error end
+  if S.raw.last_error and S.raw.last_error ~= "" then return S.raw.last_error end
+  return S.last_error
+end
+
+local function consume_driver_status(raw)
+  local id = tonumber(raw.command_id) or 0
+  local status = raw.command_status
+  if id ~= 0 and id ~= S.last_completed_command and (status == "succeeded" or status == "failed") then
+    S.last_completed_command = id
+    if status == "failed" then
+      S.last_error = raw.command_error
+    else
+      S.last_error = nil
+      if raw.command_kind == "forget" then
+        update_preferred()
+        set_driver_preferred()
+        save_config()
+      end
+    end
+  end
+  -- poll(S.raw) mutates the existing table: do not rely on table identity to
+  -- clear a previous connection error after the next successful connection.
+  if (raw.ready == true or raw.phase == "ready") and (not raw.last_error or raw.last_error == "") then
+    S.last_error = nil
+    S.driver_error = nil
+  elseif status == "pending" and (not raw.last_error or raw.last_error == "") then
+    S.last_error = nil
+  end
+  if not (raw.command_kind == "forget" and status == "pending") then remember_ready_device(raw) end
 end
 
 local set_polling
@@ -430,17 +503,9 @@ local function poll_driver()
     S.raw.lt, S.raw.rt = raw.lt or 0, raw.rt or 0
     S.raw.report_id = raw.report_id or 0
     S.raw.notify_count = raw.notify_count or S.raw.notify_count or 0
-    S.raw.last_report_handle = raw.last_report_handle or S.raw.last_report_handle or 0
-    S.raw.last_report_len = raw.last_report_len or S.raw.last_report_len or 0
-    S.raw.last_report_hex = raw.last_report_hex or S.raw.last_report_hex or ""
-    for index = 0, 1 do
-      for _, suffix in ipairs({ "handle", "id", "len", "notify_count", "hex" }) do
-        local key = "report" .. index .. "_" .. suffix
-        S.raw[key] = raw[key] ~= nil and raw[key] or S.raw[key]
-      end
-    end
+
   end
-  if status_update then remember_ready_device(S.raw) end
+  if status_update then consume_driver_status(S.raw) end
   sample_calibration(S.raw)
   S.last_driver_seq = S.raw.seq or S.last_driver_seq
   publish(S.raw)
@@ -455,15 +520,24 @@ local function state_snapshot()
   return {
     ok = S.driver ~= nil,
     version = APP.VERSION,
+    language = read_language(),
+    auto_connect_supported = S.driver ~= nil and type(S.driver.set_auto_connect) == "function",
     enabled = S.enabled,
     source = APP.SOURCE,
     route_base = APP.ROUTE_BASE,
     fixed_route_base = APP.FIXED_ROUTE_BASE,
     driver_error = S.driver_error,
-    last_error = S.last_error or S.raw.last_error,
+    last_error = current_error(),
     phase = S.raw.phase or "stopped",
     profile = S.raw.profile or "unknown",
     connected = S.raw.connected == true,
+    ready = S.raw.ready == true,
+    started = S.raw.started == true,
+    scanning = S.raw.scanning == true,
+    command_id = S.raw.command_id or 0,
+    command_kind = S.raw.command_kind or "none",
+    command_status = S.raw.command_status or "none",
+    command_error = S.raw.command_error or "",
     connecting = S.raw.connecting == true,
     encrypted = S.raw.encrypted == true,
     disconnect_reason = S.raw.disconnect_reason or 0,
@@ -479,9 +553,6 @@ local function state_snapshot()
       rx = S.raw.rx or 0, ry = S.raw.ry or 0,
       lt = S.raw.lt or 0, rt = S.raw.rt or 0,
       notify_count = S.raw.notify_count or 0,
-      last_report_handle = S.raw.last_report_handle or 0,
-      last_report_len = S.raw.last_report_len or 0,
-      last_report_hex = S.raw.last_report_hex or "",
     },
     output = S.output,
     pressed = pressed,
@@ -499,6 +570,13 @@ local function input_snapshot()
     seq = S.last_driver_seq,
     enabled = S.enabled,
     connected = S.raw.connected == true,
+    ready = S.raw.ready == true,
+    started = S.raw.started == true,
+    scanning = S.raw.scanning == true,
+    command_id = S.raw.command_id or 0,
+    command_kind = S.raw.command_kind or "none",
+    command_status = S.raw.command_status or "none",
+    command_error = S.raw.command_error or "",
     connecting = S.raw.connecting == true,
     phase = S.raw.phase or "stopped",
     profile = S.raw.profile or "unknown",
@@ -506,7 +584,7 @@ local function input_snapshot()
     address = S.raw.address or "",
     manual_scan = S.raw.manual_scan == true,
     scan_count = S.raw.scan_count or 0,
-    last_error = S.last_error or S.raw.last_error,
+    last_error = current_error(),
     buttons = S.output.buttons or 0,
     raw_buttons = S.raw.buttons or 0,
     events = events,
@@ -514,19 +592,6 @@ local function input_snapshot()
     rx = S.raw.rx or 0, ry = S.raw.ry or 0,
     lt = S.raw.lt or 0, rt = S.raw.rt or 0,
     notify_count = S.raw.notify_count or 0,
-    last_report_handle = S.raw.last_report_handle or 0,
-    last_report_len = S.raw.last_report_len or 0,
-    last_report_hex = S.raw.last_report_hex or "",
-    report0_handle = S.raw.report0_handle or 0,
-    report0_id = S.raw.report0_id or 0,
-    report0_len = S.raw.report0_len or 0,
-    report0_notify_count = S.raw.report0_notify_count or 0,
-    report0_hex = S.raw.report0_hex or "",
-    report1_handle = S.raw.report1_handle or 0,
-    report1_id = S.raw.report1_id or 0,
-    report1_len = S.raw.report1_len or 0,
-    report1_notify_count = S.raw.report1_notify_count or 0,
-    report1_hex = S.raw.report1_hex or "",
   }
 end
 
@@ -537,6 +602,13 @@ local function service_status()
     enabled = S.enabled,
     phase = S.enabled and (S.raw.phase or "stopped") or "disabled",
     connected = S.raw.connected == true,
+    ready = S.raw.ready == true,
+    started = S.raw.started == true,
+    scanning = S.raw.scanning == true,
+    command_id = S.raw.command_id or 0,
+    command_kind = S.raw.command_kind or "none",
+    command_status = S.raw.command_status or "none",
+    command_error = S.raw.command_error or "",
     connecting = S.raw.connecting == true,
     profile = S.raw.profile or "unknown",
     name = S.raw.name or "",
@@ -547,7 +619,7 @@ local function service_status()
     buttons = tonumber(S.output.buttons) or 0,
     raw_buttons = tonumber(S.raw.buttons) or 0,
     seq = S.last_driver_seq,
-    error = S.last_error or S.raw.last_error,
+    error = current_error(),
   }
 end
 
@@ -558,7 +630,7 @@ local function scan_devices()
   end
   local ok, count = pcall(S.driver.scan_count)
   if not ok then return devices, tostring(count) end
-  count = math.min(tonumber(count) or 0, 8)
+  count = math.min(tonumber(count) or 0, 16)
   for index = 1, count do
     local item_ok, item = pcall(S.driver.scan_device, index)
     if item_ok and type(item) == "table" then devices[#devices + 1] = item end
@@ -569,7 +641,7 @@ end
 local function devices_snapshot()
   local devices, err = scan_devices()
   if err then return { ok = false, devices = devices, error = err } end
-  return { ok = true, scanning = S.raw.phase == "scanning", devices = devices }
+  return { ok = true, scanning = S.raw.scanning == true, devices = devices }
 end
 
 local function response(status, content_type, body)
@@ -611,6 +683,7 @@ local function handle_command(topic, payload)
   elseif type(payload) == "table" then
     doc = payload
   end
+  if type(doc) ~= "table" then return false, "invalid payload" end
 
   if topic == "status" then return true, nil end
   if topic == "enable" then return set_driver_enabled(true) end
@@ -619,38 +692,19 @@ local function handle_command(topic, payload)
     if not S.enabled then return false, "蓝牙手柄已禁用" end
     return driver_call("rescan")
   end
-  if topic == "scan_devices" then return driver_call("scan") end
+  if topic == "scan_devices" then
+    if not S.enabled then return false, "蓝牙手柄已禁用" end
+    return driver_call("scan")
+  end
   if topic == "connect_device" then
     local address = type(doc.address) == "string" and doc.address or ""
     if address == "" then return false, "请选择要连接的手柄" end
-    local selected = nil
-    for _, device in ipairs(scan_devices()) do
-      if device.address == address then selected = device; break end
-    end
-    local ok, err = driver_call("connect", address)
-    if not ok then return false, err end
-    update_preferred(address, selected and selected.addr_type,
-      selected and selected.profile, selected and selected.name)
-    local saved, save_err = save_config()
-    if not saved then S.last_error = "保存首选手柄失败: " .. tostring(save_err) end
-    return true, nil
+    -- Persist the successful device from its ready event, not queue acceptance.
+    return driver_call("connect", address)
   end
   if topic == "disconnect" then return driver_call("disconnect") end
   if topic == "pair" then return driver_call("pair") end
-  if topic == "forget" then
-    local ok, err = driver_call("forget")
-    if ok then
-      update_preferred()
-      set_driver_preferred()
-      local saved, save_err = save_config()
-      if saved then
-        S.last_error = nil
-      else
-        S.last_error = "忘记成功，但配置保存失败: " .. tostring(save_err)
-      end
-    end
-    return ok, err
-  end
+  if topic == "forget" then return driver_call("forget") end
   if topic == "calibration_start" then
     local ok, err = begin_calibration()
     log("calibration", ok and "started" or "start failed", tostring(err or ""))
@@ -667,14 +721,24 @@ local function handle_command(topic, payload)
     return true, nil
   end
   if topic == "restore_defaults" then
+    local previous = copy_table(S.config)
+    local applied, apply_err = set_auto_connect(true)
+    if not applied then return false, apply_err end
     S.config = default_config()
+    S.config.enabled = S.enabled
+    local saved, save_err = save_config()
+    if not saved then
+      S.config = previous
+      set_auto_connect(previous.auto_connect)
+      return false, save_err
+    end
     rebuild_mapping_bits()
     S.calibration = nil
     if S.driver and type(S.driver.set_preferred) == "function" then
       set_driver_preferred()
     end
     publish(S.raw)
-    return save_config()
+    return true, nil
   end
   if topic == "set_mapping" then
     merge_config({ mapping = doc.mapping or doc })
@@ -682,50 +746,50 @@ local function handle_command(topic, payload)
     return save_config()
   end
   if topic == "set_config" then
+    if doc.auto_connect ~= nil and type(doc.auto_connect) ~= "boolean" then
+      return false, "auto_connect must be a boolean"
+    end
+    local previous = copy_table(S.config)
+    if doc.auto_connect ~= nil then
+      local applied, apply_err = set_auto_connect(doc.auto_connect)
+      if not applied then return false, apply_err end
+    end
     merge_config(doc)
+    S.config.enabled = S.enabled
+    local saved, save_err = save_config()
+    if not saved then
+      S.config = previous
+      rebuild_mapping_bits()
+      if doc.auto_connect ~= nil then set_auto_connect(previous.auto_connect) end
+      return false, save_err
+    end
     publish(S.raw)
-    return save_config()
+    return true, nil
   end
   return false, "未知命令: " .. tostring(topic)
 end
 
-local PAGE = [==[
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BLE 手柄服务</title><style>
-:root{color-scheme:light;--bg:#f4f6f8;--card:#fff;--text:#17202a;--muted:#68737d;--line:#dfe5ea;--blue:#1769e0;--green:#16845b;--red:#c63d3d;--shadow:0 8px 28px rgba(18,32,48,.07)}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:1040px;margin:auto;padding:20px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}h1{font-size:24px;margin:0}.sub{color:var(--muted);margin:3px 0 0}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--card)}.dot{width:9px;height:9px;border-radius:50%;background:#9aa4ad}.online .dot{background:var(--green)}.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}.card h2{font-size:16px;margin:0 0 14px}.meta{display:grid;grid-template-columns:86px 1fr;gap:7px 12px;margin-bottom:14px}.meta span:nth-child(odd){color:var(--muted)}.axes{display:grid;grid-template-columns:1fr 1fr;gap:10px}.axis{padding:10px;border-radius:10px;background:#f7f9fb}.axis b{display:flex;justify-content:space-between;margin-bottom:7px}.track{height:7px;background:#dde4ea;border-radius:9px;overflow:hidden}.fill{height:100%;width:50%;background:var(--blue)}.pressed{min-height:44px;display:flex;flex-wrap:wrap;gap:7px}.chip{padding:6px 9px;border-radius:8px;background:#e9f2ff;color:#1258b8;font-weight:650}.empty,.mask{color:var(--muted)}.mask{display:block;margin-top:5px}.field-label{display:block;color:var(--muted);margin-bottom:6px}.device-picker{display:grid;grid-template-columns:1fr auto;gap:9px;margin-bottom:10px}.device-picker select{min-width:0;min-height:44px;border:1px solid var(--line);border-radius:9px;padding:0 10px;background:#fff}button,select,input{font:inherit}button{min-height:44px;border:0;border-radius:9px;padding:0 15px;background:var(--blue);color:white;font-weight:650;cursor:pointer;touch-action:manipulation}button:active{filter:brightness(.92)}button:disabled{cursor:not-allowed;opacity:.5}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid rgba(23,105,224,.28);outline-offset:2px}button.secondary{background:#edf1f5;color:var(--text);border:1px solid var(--line)}button.danger{background:#fff0f0;color:var(--red);border:1px solid #f1cccc}.actions{display:flex;flex-wrap:wrap;gap:9px}.notice{min-height:22px;margin:10px 0 0;color:var(--muted)}.notice.bad{color:var(--red)}.notice.good{color:var(--green)}.cal-help{color:var(--muted);margin:-5px 0 14px}.range-row{display:grid;grid-template-columns:100px 1fr 66px;gap:10px;align-items:center;margin:10px 0}.range-row input{width:100%}.map{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.map-row{display:grid;grid-template-columns:1fr 1.25fr;align-items:center;gap:8px}.map-row select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:9px;padding:0 10px;background:#fff}.wide{grid-column:1/-1}.footer{color:var(--muted);margin:16px 2px 0;font-size:12px}@media(max-width:760px){main{padding:12px}.top{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.map{grid-template-columns:1fr}.card{padding:15px}.range-row{grid-template-columns:84px 1fr 58px}.device-picker{grid-template-columns:1fr}button,select,input{font-size:16px}}
-</style></head><body><main><header class="top"><div><h1>BLE 手柄服务</h1><p class="sub">兼容 Xbox、Q34、Q36 · 输入映射与校准</p></div><div id="status" class="status"><i class="dot"></i><span>读取中</span></div></header>
-<section class="grid"><article class="card"><h2>实时状态</h2><div class="meta"><span>设备</span><strong id="device">--</strong><span>地址</span><code id="address">--</code><span>驱动</span><span id="profile">--</span><span>阶段</span><span id="phase">--</span></div><div class="axes"><div class="axis"><b><span>LX</span><span id="lxv">0</span></b><div class="track"><div class="fill" id="lx"></div></div></div><div class="axis"><b><span>LY</span><span id="lyv">0</span></b><div class="track"><div class="fill" id="ly"></div></div></div><div class="axis"><b><span>RX</span><span id="rxv">0</span></b><div class="track"><div class="fill" id="rx"></div></div></div><div class="axis"><b><span>RY</span><span id="ryv">0</span></b><div class="track"><div class="fill" id="ry"></div></div></div><div class="axis"><b><span>LT</span><span id="ltv">0</span></b><div class="track"><div class="fill" id="lt"></div></div></div><div class="axis"><b><span>RT</span><span id="rtv">0</span></b><div class="track"><div class="fill" id="rt"></div></div></div></div><h2 style="margin-top:16px">应用收到的按键</h2><div id="pressed" class="pressed"><span class="empty">未按下</span></div><code id="buttonMask" class="mask">raw=0x0000 mapped=0x0000</code></article>
-<article class="card"><h2>连接管理</h2><div class="actions" style="margin-bottom:14px"><button class="secondary" id="enableDriver" data-cmd="enable">启用驱动</button><button class="secondary" id="disableDriver" data-cmd="disable">禁用驱动</button></div><label class="field-label" for="deviceList">扫描到的手柄</label><div class="device-picker"><select id="deviceList"><option value="">点击“扫描手柄”查找设备</option></select><button id="connectDevice" disabled>连接并配对</button></div><div class="actions"><button class="secondary" id="scanDevices">扫描手柄</button><button class="secondary" data-cmd="pair">重新配对当前</button><button class="secondary" data-cmd="disconnect">断开</button><button class="danger" data-cmd="forget">忘记当前手柄</button></div><p id="message" class="notice" aria-live="polite"></p><h2 style="margin-top:22px">摇杆校准</h2><p class="cal-help">手柄静止时开始，然后把两个摇杆转满一圈、按满扳机，最后保存。</p><div class="actions"><button id="calStart" data-cmd="calibration_start">开始采样</button><button class="secondary" data-cmd="calibration_save">保存校准</button><button class="secondary" data-cmd="calibration_cancel">取消</button></div><div class="range-row"><label for="deadzone">中心死区</label><input id="deadzone" type="range" min="0" max="16000" step="100"><output id="deadzoneValue">0</output></div><div class="actions"><button class="secondary" id="saveConfig">保存死区</button><button class="danger" data-cmd="restore_defaults">恢复默认</button></div></article>
-<article class="card wide"><h2>按键映射</h2><p class="cal-help">左侧是应用收到的目标键，右侧选择手柄原始键。支持交换 A/B、X/Y 或自定义肩键。</p><div id="mapping" class="map"></div><div class="actions" style="margin-top:16px"><button id="saveMapping">保存映射</button></div></article></section><p class="footer">输入通过 controller source <code>ble-main</code> 发布；RetroGo 无需直接持有 BLE。</p></main>
-<script>
-const base=location.pathname.replace(/\/$/,''), names=['UP','DOWN','LEFT','RIGHT','A','B','X','Y','L','R','LS','RS','SELECT','START','SHARE','HOME'], bits=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768], labels={'UP':'方向 上','DOWN':'方向 下','LEFT':'方向 左','RIGHT':'方向 右','A':'A','B':'B','X':'X','Y':'Y','L':'LB / L','R':'RB / R','LS':'左摇杆按下','RS':'右摇杆按下','SELECT':'View / Select','START':'Menu / Start','SHARE':'Share','HOME':'Home'};let initialized=false,currentMask=0,currentRawMask=0,latchedMask=0,latchTimer,devicesKey='',scanMode=false,statusBusy=false,padConnected=false,driverEnabled=true;
-const $=id=>document.getElementById(id);function msg(text,kind=''){const e=$('message');e.textContent=text||'';e.className='notice '+kind}function axis(id,v,trigger=false){v=Number(v)||0;$(id+'v').textContent=v;$(id).style.width=(trigger?Math.max(0,Math.min(100,v/65535*100)):Math.max(0,Math.min(100,(v+32767)/65534*100)))+'%'}
-function syncDriverButtons(){ $('enableDriver').disabled=driverEnabled;$('disableDriver').disabled=!driverEnabled;$('scanDevices').disabled=!driverEnabled }
-function run(button,promise){button.disabled=true;return promise.finally(()=>{button.disabled=false;syncDriverButtons()})}
-function buildMap(mapping){const root=$('mapping');root.innerHTML='';for(const key of names){const row=document.createElement('label');row.className='map-row';row.innerHTML='<span>'+labels[key]+'</span>';const select=document.createElement('select');select.dataset.target=key;for(const source of ['NONE',...names]){const o=document.createElement('option');o.value=source;o.textContent=source==='NONE'?'不映射':labels[source];o.selected=(mapping[key]||key)===source;select.appendChild(o)}row.appendChild(select);root.appendChild(row)}}
-function renderButtons(){const mask=currentMask|latchedMask,list=[];for(let i=0;i<bits.length;i++)if(mask&bits[i])list.push(names[i]);$('pressed').innerHTML=list.length?list.map(x=>'<span class="chip">'+labels[x]+'</span>').join(''):'<span class="empty">未按下</span>';$('buttonMask').textContent='raw=0x'+currentRawMask.toString(16).padStart(4,'0').toUpperCase()+' mapped=0x'+currentMask.toString(16).padStart(4,'0').toUpperCase()}
-function paintInput(s){const connected=!!s.connected,status=$('status'),wasScanning=scanMode;driverEnabled=s.enabled!==false;padConnected=connected;scanMode=!!s.manual_scan||s.phase==='scanning'||s.phase==='select_device';statusBusy=connected||!!s.connecting||scanMode;syncDriverButtons();$('connectDevice').disabled=!driverEnabled||connected||!$('deviceList').value;status.classList.toggle('online',connected);status.querySelector('span').textContent=!driverEnabled?'已禁用':(connected?'已连接':(s.connecting?'连接中':(scanMode?'扫描中':'未连接')));$('device').textContent=s.name||'--';$('address').textContent=s.address||'--';$('profile').textContent=s.profile||'--';$('phase').textContent=s.phase||'--';for(const k of ['lx','ly','rx','ry'])axis(k,s[k]);for(const k of ['lt','rt'])axis(k,s[k],true);currentMask=Number(s.buttons)||0;currentRawMask=Number(s.raw_buttons)||0;const events=Number(s.events)||0;if(events){latchedMask|=events;clearTimeout(latchTimer);latchTimer=setTimeout(()=>{latchedMask=0;renderButtons()},700)}renderButtons();if(wasScanning&&!scanMode)devices().catch(()=>{});if(s.last_error)msg(s.last_error,'bad');else if(connected&&$('message').classList.contains('bad'))msg('')}
-function paint(s){paintInput({enabled:s.enabled,connected:s.connected,connecting:s.connecting,manual_scan:s.manual_scan,phase:s.phase,profile:s.profile,name:s.name,address:s.address,buttons:s.output&&s.output.buttons,raw_buttons:s.raw&&s.raw.buttons,lx:s.raw&&s.raw.lx,ly:s.raw&&s.raw.ly,rx:s.raw&&s.raw.rx,ry:s.raw&&s.raw.ry,lt:s.raw&&s.raw.lt,rt:s.raw&&s.raw.rt});$('calStart').textContent=s.calibrating?'正在采样…':'开始采样';if(!initialized&&s.config){$('deadzone').value=s.config.deadzone||0;$('deadzoneValue').textContent=$('deadzone').value;buildMap(s.config.mapping||{});initialized=true}if(s.last_error)msg(s.last_error,'bad')}
-function paintDevices(d){const list=d.devices||[],key=(d.scanning?'1':'0')+JSON.stringify(list),select=$('deviceList'),old=select.value;if(key===devicesKey)return;devicesKey=key;select.innerHTML='';$('connectDevice').disabled=!driverEnabled||!list.length||padConnected;if(!list.length){const o=document.createElement('option');o.value='';o.textContent=d.scanning?'正在扫描…':'没有发现支持的手柄';select.appendChild(o);return}for(const x of list){const o=document.createElement('option');o.value=x.address;o.textContent=(x.name||'BLE HID Gamepad')+' · '+x.address+' · '+x.rssi+' dBm';select.appendChild(o)}if([...select.options].some(x=>x.value===old))select.value=old}
-async function state(){const r=await fetch(base+'/api/state',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);paint(await r.json())}async function input(){const r=await fetch(base+'/api/input',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);paintInput(await r.json())}async function devices(){const r=await fetch(base+'/api/devices',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);paintDevices(await r.json())}async function command(topic,payload={}){msg('处理中…');const r=await fetch(base+'/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic,payload})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||('HTTP '+r.status));msg('已完成','good');paint(d.state);return d}
-async function pollInput(){try{await input()}catch(e){}setTimeout(pollInput,document.hidden?5000:(statusBusy?400:1500))}async function pollDevices(){if(scanMode){try{await devices()}catch(e){}}setTimeout(pollDevices,document.hidden?2000:(scanMode?800:1000))}
-document.addEventListener('click',e=>{const cmd=e.target.dataset&&e.target.dataset.cmd;if(cmd)run(e.target,command(cmd)).catch(x=>msg(x.message,'bad'))});$('scanDevices').onclick=e=>{scanMode=true;devicesKey='';run(e.currentTarget,command('scan_devices').then(devices)).catch(x=>msg(x.message,'bad'))};$('connectDevice').onclick=e=>run(e.currentTarget,command('connect_device',{address:$('deviceList').value})).catch(x=>msg(x.message,'bad'));$('deadzone').oninput=()=>$('deadzoneValue').textContent=$('deadzone').value;$('saveConfig').onclick=e=>run(e.currentTarget,command('set_config',{deadzone:Number($('deadzone').value)})).catch(x=>msg(x.message,'bad'));$('saveMapping').onclick=e=>{const mapping={};document.querySelectorAll('select[data-target]').forEach(x=>mapping[x.dataset.target]=x.value);run(e.currentTarget,command('set_mapping',{mapping})).catch(x=>msg(x.message,'bad'))};state().catch(x=>msg(x.message,'bad')).finally(()=>{devices().catch(()=>{});pollInput();pollDevices()});
-</script></body></html>
-]==]
+-- Read the standalone page only on navigation, not on every input poll.
+local function page_response()
+  local ok, page = pcall(function() return file.getcontents(APP.APP_DIR .. "/main.html") end)
+  if not ok or type(page) ~= "string" or page == "" then
+    return response("503 Service Unavailable", "text/plain; charset=utf-8", "HID Pad: main.html missing")
+  end
+  return response("200 OK", "text/html; charset=utf-8", page)
+end
 
 local function route_command(req)
   local raw, read_err = read_body(req, 4096)
   if not raw then return json_response("400 Bad Request", { ok = false, error = read_err }) end
   local doc, decode_err = json_decode(raw)
-  if not doc or type(doc.topic) ~= "string" then
+  if type(doc) ~= "table" or type(doc.topic) ~= "string" then
     return json_response("400 Bad Request", { ok = false, error = decode_err or "topic missing" })
   end
   local payload = doc.payload
   local payload_raw = type(payload) == "table" and json_encode(payload) or payload
   local ok, err = handle_command(doc.topic, payload_raw or "")
   if not ok then return json_response("400 Bad Request", { ok = false, error = err, state = state_snapshot() }) end
-  return json_response("200 OK", { ok = true, state = state_snapshot() })
+  return json_response("200 OK", { ok = true, command_id = type(err) == "number" and err or nil, state = state_snapshot() })
 end
 
 local function register_route(method, path, handler)
@@ -745,14 +809,22 @@ local function register_route(method, path, handler)
   return true
 end
 
+local function diagnostics_snapshot()
+  if not S.driver or type(S.driver.diagnostics) ~= "function" then return { ok = false, error = "diagnostics unavailable" } end
+  local ok, value = pcall(S.driver.diagnostics)
+  if not ok or type(value) ~= "table" then return { ok = false, error = tostring(value) } end
+  return value
+end
+
 local function register_route_set(base)
   if type(base) ~= "string" or base == "" then return end
   local get, post = httpd.GET or "GET", httpd.POST or "POST"
-  register_route(get, base, function() return response("200 OK", "text/html; charset=utf-8", PAGE) end)
-  register_route(get, base .. "/", function() return response("200 OK", "text/html; charset=utf-8", PAGE) end)
+  register_route(get, base, page_response)
+  register_route(get, base .. "/", page_response)
   register_route(get, base .. "/api/state", function() return json_response("200 OK", state_snapshot()) end)
   register_route(get, base .. "/api/input", function() return json_response("200 OK", input_snapshot()) end)
   register_route(get, base .. "/api/devices", function() return json_response("200 OK", devices_snapshot()) end)
+  register_route(get, base .. "/api/diagnostics", function() return json_response("200 OK", diagnostics_snapshot()) end)
   register_route(post, base .. "/api/command", route_command)
 end
 
@@ -802,6 +874,7 @@ local function sync_driver_state()
   if ok and type(raw) == "table" then
     S.raw = raw
     S.last_driver_seq = raw.seq or S.last_driver_seq
+    consume_driver_status(raw)
     publish(raw)
   end
 end
@@ -824,6 +897,12 @@ local function start_driver()
     APP.EVENT_MODE = ok and enabled == true
   end
   set_driver_preferred()
+  local policy_ok, policy_err = set_auto_connect(S.config.auto_connect)
+  if not policy_ok then
+    S.driver_error = policy_err
+    S.last_error = policy_err
+    return false, policy_err
+  end
   if not S.enabled then
     sync_driver_state()
     return true, nil
@@ -852,7 +931,9 @@ set_polling = function(enabled)
     return true
   end
   if enabled then
-    local interval = APP.POLL_READY_MS
+    local interval = S.raw.connected and APP.POLL_READY_MS
+      or S.raw.scanning and APP.POLL_SCAN_MS
+      or S.raw.connecting and 50 or APP.POLL_IDLE_MS
     if APP.poll_ms ~= interval then
       APP.poll_ms = interval
       timer:alarm(interval, tmr.ALARM_AUTO, poll_driver)
@@ -867,9 +948,13 @@ end
 set_driver_enabled = function(enable)
   enable = enable == true
   if not S.driver then return false, S.driver_error or "hidpad.so 未加载" end
+  local command_id
   if enable then
+    local applied, apply_err = set_auto_connect(S.config.auto_connect)
+    if not applied then return false, apply_err end
     S.enabled = true
     local started, err = driver_call("start", 8000)
+    command_id = started and err or nil
     if not started then
       S.enabled = false
       return false, "蓝牙手柄启动失败: " .. tostring(err)
@@ -891,7 +976,7 @@ set_driver_enabled = function(enable)
     return false, S.last_error
   end
   log("driver", S.enabled and "enabled" or "disabled")
-  return true, nil
+  return true, command_id
 end
 
 load_config()

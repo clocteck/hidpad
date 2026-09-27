@@ -1,4 +1,35 @@
-# HID Pad Service 1.1.23
+# HID Pad Service 1.1.0 / Module 1.1.50
+
+## 本次更新
+
+- Web 页面拆为 `package/main.html`，支持简中、繁中、英文、日文；默认读取
+  `/sd/settings.json`，不存在有效语言字段时回退 `/sd/apps/settings.json`。
+  接受 `language`、`locale`、`lang` 字段。右上角语言选择仅保存在浏览器。
+- `config.json` 新增默认开启的 `auto_connect`。关闭后仍可手动连接；Q34/Q36
+  的一次无输入恢复独立于此开关。手动断开暂停重连，意外掉线才按策略重连。
+- 扫描使用独立状态，不覆盖配对、发现或订阅阶段；只有输入初始化完成才 `ready`。
+- C 命令返回 `true, command_id`；Web/IPC 状态提供 `command_id`、`command_kind`、
+  `command_status`、`command_error`。`pending` 表示已接收，`succeeded`/`failed`
+  才是完成结果。首选设备在连接就绪时保存，忘记设备在执行成功后保存。
+- 报告十六进制及详细统计移至 `GET /hidpad/api/diagnostics`（或模块 `diagnostics()`），
+  普通输入更新不再格式化或编码这些数据。重新连接成功会清除上次连接错误；SD
+  配置写入错误单独保留。
+- 未连接且未扫描时 worker 最长等待 1000ms；命令通过信号量立即唤醒。输入就绪
+  的轮询间隔仍为 10ms，扫描为 20ms，连接初始化为 50ms。
+- S3 编译器测得实例热状态 4576 → 3600 字节，冷状态 1764 → 2024 字节。
+  热状态少 976 字节，冷状态在 PSRAM；6KB worker 栈不变。这是分配结构大小，
+  不代表设备启动后实际剩余堆大小。
+
+部署需同时更新 `main.lua`、`main.html`、`modules/hidpad.so` 及应用元数据；保留
+设备现有 `config.json`。本地预览运行 `node tools/preview-server.cjs`，仅提供模拟数据。
+
+原生 S3 模块构建脚本为 `tools/build-s3-module.ps1`，参数 `-Compiler` 指向
+`xtensa-esp32s3-elf-gcc.exe`，`-ModuleAbiDir` 指向宿主 `module_abi.h` 所在目录。
+只构建动态模块，不编译宿主固件。
+
+定向检查：`src/tests/hidpad_state_test.c` 使用模拟 BLE 事件检查真实 C 状态机；
+`src/tests/service_state_test.py` 使用 Lua 5.4（lupa）检查持久化与错误恢复；
+`node src/tests/web_state_test.cjs` 检查页面异步结果及旧错误清除。
 
 `hidpad` 是 Cubic Lua 的常驻 BLE 手柄服务。`hidpad.so` 负责扫描、连接、配对、
 GATT 发现、CCCD 订阅和输入报告解码；`main.lua` 负责校准、按键映射、Web/IPC

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "1.1.48"
+#define HIDPAD_VERSION "1.1.50"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 16
@@ -219,6 +219,7 @@ typedef enum pending_read_t {
 
 typedef enum worker_command_t {
     WORKER_COMMAND_NONE = 0,
+    WORKER_COMMAND_START,
     WORKER_COMMAND_RESCAN,
     WORKER_COMMAND_SCAN,
     WORKER_COMMAND_CONNECT,
@@ -293,11 +294,45 @@ typedef struct vendor_channel_t {
     uint16_t cccd_handle;
     uint8_t properties;
     uint8_t subscribed;
-    char uuid[40];
+    uint8_t flydigi_nus_notify;
 } vendor_channel_t;
 
 /* Scan/discovery/configuration data is not touched by the ready input path. */
 typedef struct hidpad_cold_state_t {
+    /* Configuration/diagnostics and command bookkeeping are not input state. */
+    uint32_t command_id;
+    uint32_t command_deadline_ms;
+    worker_command_t command_kind;
+    uint8_t command_status; /* 0=none, 1=pending, 2=succeeded, 3=failed */
+    const char *command_error;
+    discovered_device_t command_device;
+    uint8_t command_device_valid;
+    uint8_t last_report[HIDPAD_REPORT_CACHE_SIZE];
+    uint8_t btp_last_vendor[HIDPAD_REPORT_CACHE_SIZE];
+    uint8_t btp_last_vendor_len;
+    uint8_t btp_last_handshake[HIDPAD_REPORT_CACHE_SIZE];
+    uint8_t btp_last_handshake_len;
+    uint32_t connection_params_attempt_count;
+    int32_t connection_params_last_error;
+    uint32_t btp_keepalive_attempt_count;
+    uint32_t btp_keepalive_error_count;
+    int32_t btp_keepalive_last_error;
+    uint32_t btp_vendor_notify_count;
+    uint32_t btp_heartbeat_reply_count;
+    uint32_t btp_handshake_reply_count;
+    uint32_t btp_watchdog_command_count;
+    uint32_t btp_watchdog_reply_count;
+    uint32_t btp_input_read_count;
+    uint32_t ble_non_notify_event_count;
+    uint32_t ble_last_non_notify_ms;
+    uint32_t ble_done_error_count;
+    uint32_t ble_last_non_notify_irq;
+    int32_t ble_last_non_notify_status;
+    uint32_t driver_poll_count;
+    uint16_t last_report_handle;
+    uint8_t last_report_len;
+    uint16_t btp_last_vendor_handle;
+
     discovered_device_t scan_results[HIDPAD_MAX_SCAN_RESULTS];
     module_ble_config_t config_work;
     module_ble_scan_config_t scan_work;
@@ -321,13 +356,13 @@ typedef struct hidpad_instance_t {
     uint8_t started;
     uint8_t scan_active;
     uint8_t manual_scan;
+    uint8_t auto_connect;
+    uint8_t auto_connect_dirty;
     uint8_t scan_result_count;
     uint8_t state_dirty;
     uint8_t status_dirty;
     uint8_t peer_addr_type;
     uint8_t forget_pending;
-    uint8_t direct_reconnect_pending;
-    uint8_t force_scan_once;
     uint32_t scan_ms;
     uint32_t rescan_backoff_ms;
     uint32_t next_scan_ms;
@@ -336,28 +371,8 @@ typedef struct hidpad_instance_t {
     uint32_t next_keepalive_ms;
     uint32_t next_btp_keepalive_ms;
     uint32_t keepalive_count;
-    uint32_t connection_params_attempt_count;
-    int32_t connection_params_last_error;
-    uint32_t btp_keepalive_attempt_count;
-    uint32_t btp_keepalive_error_count;
-    int32_t btp_keepalive_last_error;
-    uint32_t btp_vendor_notify_count;
     uint32_t btp_last_vendor_notify_ms;
-    uint32_t btp_heartbeat_reply_count;
-    uint32_t btp_handshake_reply_count;
-    uint32_t btp_watchdog_command_count;
-    uint32_t btp_watchdog_reply_count;
-    uint32_t btp_input_read_count;
-    uint32_t ble_non_notify_event_count;
-    uint32_t ble_last_non_notify_ms;
-    uint32_t ble_done_error_count;
-    uint32_t ble_last_non_notify_irq;
-    int32_t ble_last_non_notify_status;
     uint32_t input_notify_count;
-    uint32_t driver_poll_count;
-    uint16_t last_report_handle;
-    uint8_t last_report_len;
-    char last_report_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
     uint16_t conn_handle;
     uint16_t hid_start;
     uint16_t hid_end;
@@ -386,7 +401,6 @@ typedef struct hidpad_instance_t {
     uint16_t vendor_end;
     uint16_t vendor_write_handle;
     uint16_t btp_input_handle;
-    uint16_t btp_last_vendor_handle;
     uint8_t vendor_write_properties;
     uint8_t vendor_service_variant;
     uint8_t vendor_service_count;
@@ -407,8 +421,6 @@ typedef struct hidpad_instance_t {
     uint8_t btp_watchdog_sent;
     uint8_t btp_seen_battery_reply;
     uint8_t btp_seen_info_reply;
-    char btp_last_vendor_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
-    char btp_last_handshake_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
     vendor_channel_t vendor_channels[HIDPAD_MAX_VENDOR_CHANNELS];
     pending_read_t pending_read;
     uint8_t pending_report_index;
@@ -429,7 +441,6 @@ typedef struct hidpad_instance_t {
     volatile uint8_t worker_running;
     volatile uint8_t worker_stop;
     worker_command_t worker_command;
-    char worker_command_address[18];
 } hidpad_instance_t;
 
 static hidpad_host_api_t s_host;
@@ -779,11 +790,41 @@ static void mark_status_dirty(hidpad_instance_t *inst)
     mark_dirty(inst);
 }
 
+static void finish_command(hidpad_instance_t *inst, const char *error)
+{
+    if (!inst || inst->cold->command_status != 1) return;
+    inst->cold->command_status = error ? 3 : 2;
+    inst->cold->command_error = error;
+    if (error) inst->last_error = error;
+    mark_status_dirty(inst);
+}
+
+static const char *command_text(worker_command_t command)
+{
+    switch (command) {
+    case WORKER_COMMAND_START: return "start";
+    case WORKER_COMMAND_SCAN: return "scan";
+    case WORKER_COMMAND_RESCAN: return "rescan";
+    case WORKER_COMMAND_CONNECT: return "connect";
+    case WORKER_COMMAND_DISCONNECT: return "disconnect";
+    case WORKER_COMMAND_PAIR: return "pair";
+    case WORKER_COMMAND_FORGET: return "forget";
+    default: return "none";
+    }
+}
+
+static void finish_command_kind(hidpad_instance_t *inst, worker_command_t kind,
+                                const char *error)
+{
+    if (inst->cold->command_kind == kind) finish_command(inst, error);
+}
+
 static void set_error(hidpad_instance_t *inst, const char *error)
 {
     if (!inst) return;
     inst->last_error = error;
     inst->phase = PHASE_ERROR;
+    finish_command(inst, error);
     mark_status_dirty(inst);
 }
 
@@ -815,23 +856,23 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->protocol_mode_properties = 0;
     inst->next_keepalive_ms = 0;
     inst->next_btp_keepalive_ms = 0;
-    inst->connection_params_attempt_count = 0;
-    inst->connection_params_last_error = MODULE_ERR_NOT_FOUND;
+    inst->cold->connection_params_attempt_count = 0;
+    inst->cold->connection_params_last_error = MODULE_ERR_NOT_FOUND;
     inst->btp_last_vendor_notify_ms = 0;
-    inst->btp_heartbeat_reply_count = 0;
-    inst->btp_handshake_reply_count = 0;
-    inst->btp_watchdog_command_count = 0;
-    inst->btp_watchdog_reply_count = 0;
-    inst->btp_input_read_count = 0;
-    inst->ble_non_notify_event_count = 0;
-    inst->ble_last_non_notify_ms = 0;
-    inst->ble_done_error_count = 0;
-    inst->ble_last_non_notify_irq = 0;
-    inst->ble_last_non_notify_status = 0;
+    inst->cold->btp_heartbeat_reply_count = 0;
+    inst->cold->btp_handshake_reply_count = 0;
+    inst->cold->btp_watchdog_command_count = 0;
+    inst->cold->btp_watchdog_reply_count = 0;
+    inst->cold->btp_input_read_count = 0;
+    inst->cold->ble_non_notify_event_count = 0;
+    inst->cold->ble_last_non_notify_ms = 0;
+    inst->cold->ble_done_error_count = 0;
+    inst->cold->ble_last_non_notify_irq = 0;
+    inst->cold->ble_last_non_notify_status = 0;
     inst->input_notify_count = 0;
-    inst->last_report_handle = 0;
-    inst->last_report_len = 0;
-    inst->last_report_hex[0] = 0;
+    inst->cold->last_report_handle = 0;
+    inst->cold->last_report_len = 0;
+
     zero_bytes(inst->reports, sizeof(inst->reports));
     inst->report_count = 0;
     inst->descriptor_index = 0;
@@ -851,7 +892,7 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->vendor_end = 0;
     inst->vendor_write_handle = 0;
     inst->btp_input_handle = 0;
-    inst->btp_last_vendor_handle = 0;
+    inst->cold->btp_last_vendor_handle = 0;
     inst->vendor_write_properties = 0;
     inst->vendor_service_variant = 0;
     inst->vendor_service_count = 0;
@@ -872,8 +913,8 @@ static void reset_gatt(hidpad_instance_t *inst)
     inst->btp_watchdog_sent = 0;
     inst->btp_seen_battery_reply = 0;
     inst->btp_seen_info_reply = 0;
-    inst->btp_last_vendor_hex[0] = 0;
-    inst->btp_last_handshake_hex[0] = 0;
+    inst->cold->btp_last_vendor_len = 0;
+    inst->cold->btp_last_handshake_len = 0;
     zero_bytes(inst->vendor_channels, sizeof(inst->vendor_channels));
     zero_bytes(inst->cold->vendor_services, sizeof(inst->cold->vendor_services));
     inst->pending_read = PENDING_READ_NONE;
@@ -943,9 +984,10 @@ static void remember_input_packet(hidpad_instance_t *inst, uint16_t value_handle
                                   const uint8_t *data, size_t len)
 {
     if (!inst || !data) return;
-    bytes_to_hex(inst->last_report_hex, sizeof(inst->last_report_hex), data, len);
-    inst->last_report_handle = value_handle;
-    inst->last_report_len = (uint8_t)len;
+    size_t cached = len < HIDPAD_REPORT_CACHE_SIZE ? len : HIDPAD_REPORT_CACHE_SIZE;
+    memcpy(inst->cold->last_report, data, cached);
+    inst->cold->last_report_handle = value_handle;
+    inst->cold->last_report_len = (uint8_t)len;
 }
 
 static void apply_decoded(hidpad_instance_t *inst,
@@ -1187,6 +1229,11 @@ static int start_scan(hidpad_instance_t *inst)
     module_ble_scan_config_t *scan;
     int32_t err;
     if (!inst || !inst->started || !inst->host->ble.gap_scan) return 0;
+    if (!inst->auto_connect && !inst->manual_scan && !inst->notification_reconnect_pending) {
+        inst->phase = PHASE_SELECT_DEVICE;
+        mark_status_dirty(inst);
+        return 1;
+    }
     /* Auto-connect decisions must only use advertisements observed in this
      * scan. Keeping results from an earlier round makes a powered-off device
      * look present and causes an endless connect/timeout loop. Manual scan
@@ -1208,7 +1255,7 @@ static int start_scan(hidpad_instance_t *inst)
         return 0;
     }
     inst->scan_active = 1;
-    inst->phase = PHASE_SCANNING;
+    if (!inst->state.connected) inst->phase = PHASE_SCANNING;
     mark_status_dirty(inst);
     return 1;
 }
@@ -1218,7 +1265,8 @@ static void schedule_rescan(hidpad_instance_t *inst, uint32_t delay_ms)
     if (!inst) return;
     inst->scan_active = 0;
     inst->next_scan_ms = now_ms(inst) + delay_ms;
-    inst->phase = PHASE_WAIT_RESCAN;
+    inst->phase = (!inst->auto_connect && !inst->manual_scan && !inst->notification_reconnect_pending) ?
+                  PHASE_SELECT_DEVICE : PHASE_WAIT_RESCAN;
     mark_status_dirty(inst);
 }
 
@@ -1468,6 +1516,8 @@ static void complete_ready(hidpad_instance_t *inst)
 {
     if (!inst) return;
     inst->phase = PHASE_READY;
+    finish_command_kind(inst, WORKER_COMMAND_CONNECT, NULL);
+    finish_command_kind(inst, WORKER_COMMAND_RESCAN, NULL);
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->last_error = NULL;
     inst->state.disconnect_reason = 0;
@@ -1477,14 +1527,14 @@ static void complete_ready(hidpad_instance_t *inst)
      * input immediately, and JoyU does not request high connection priority. */
     if (!is_btp_mapping_mode_name(inst->state.name) &&
         inst->host->ble.gap_set_connection_params) {
-        inst->connection_params_attempt_count++;
-        inst->connection_params_last_error =
+        inst->cold->connection_params_attempt_count++;
+        inst->cold->connection_params_last_error =
             inst->host->ble.gap_set_connection_params(
             inst->session, inst->conn_handle,
             HIDPAD_CONN_INTERVAL_MIN, HIDPAD_CONN_INTERVAL_MAX,
             HIDPAD_CONN_LATENCY, HIDPAD_CONN_SUPERVISION_TIMEOUT);
     } else {
-        inst->connection_params_last_error = MODULE_ERR_UNSUPPORTED;
+        inst->cold->connection_params_last_error = MODULE_ERR_UNSUPPORTED;
     }
     inst->next_input_poll_ms = now_ms(inst) + 80;
     /* Q34/Q36 sometimes needs a clean second link before its first report.
@@ -1827,7 +1877,7 @@ static void subscribe_next_vendor_channel(hidpad_instance_t *inst)
         inst->btp_input_handle && inst->host->ble.gattc_read &&
         inst->host->ble.gattc_read(inst->session, inst->conn_handle,
                                    inst->btp_input_handle) == MODULE_OK) {
-        inst->btp_input_read_count++;
+        inst->cold->btp_input_read_count++;
     }
     complete_ready(inst);
 }
@@ -1927,6 +1977,8 @@ static int connect_peer(hidpad_instance_t *inst, uint8_t addr_type, const char *
     copy_text(inst->state.address, sizeof(inst->state.address), address, strlen(address));
     copy_text(inst->state.name, sizeof(inst->state.name), name, strlen(name));
     inst->state.connecting = 1;
+    inst->last_error = NULL;
+    inst->state.disconnect_reason = 0;
     inst->phase = PHASE_CONNECTING;
     mark_status_dirty(inst);
     err = inst->host->ble.gap_connect(inst->session, addr_type, address, timeout_ms);
@@ -1946,7 +1998,9 @@ static int should_auto_connect(const hidpad_instance_t *inst,
     if (!inst || !device) return 0;
     /* A user-initiated scan is selection-only. Never race the Connect button
      * by automatically pairing a preferred/Xbox/Q36 device from its results. */
-    if (inst->manual_scan) return 0;
+    if (inst->notification_reconnect_pending)
+        return text_equal(inst->state.address, device->address);
+    if (!inst->auto_connect || inst->manual_scan) return 0;
     if (inst->cold->preferred_address[0]) {
         return text_equal(inst->cold->preferred_address, device->address);
     }
@@ -2146,6 +2200,7 @@ static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_
     inst->state.connecting = 0;
     inst->state.encrypted = 0;
     if (!notification_recovery) inst->notification_reconnect_count = 0;
+    if (notification_recovery && !was_ready) inst->notification_reconnect_pending = 0;
     clear_controls(inst);
     reset_gatt(inst);
     if (inst->forget_pending) {
@@ -2167,9 +2222,19 @@ static void handle_disconnected(hidpad_instance_t *inst, const module_ble_event_
             inst->last_error = "Failed to forget controller bond";
         }
     }
-    inst->direct_reconnect_pending = !inst->manual_scan && !inst->force_scan_once && was_ready &&
-                                     inst->cold->preferred_metadata_valid;
-    inst->force_scan_once = 0;
+    if (inst->cold->command_kind == WORKER_COMMAND_FORGET && inst->cold->command_status == 1) {
+        if (forget_err == MODULE_OK) {
+            inst->cold->preferred_address[0] = 0;
+            inst->cold->preferred_metadata_valid = 0;
+        }
+        finish_command(inst, forget_err == MODULE_OK ? NULL : "Failed to forget controller bond");
+    } else if (inst->cold->command_kind == WORKER_COMMAND_DISCONNECT) {
+        finish_command(inst, NULL);
+    } else if (inst->cold->command_kind == WORKER_COMMAND_RESCAN && was_ready) {
+        /* Explicit reconnect continues through scan, pairing and ready. */
+    } else {
+        finish_command(inst, inst->last_error ? inst->last_error : "controller disconnected");
+    }
     if (inst->manual_scan) schedule_rescan(inst, 0);
     else if (was_ready) schedule_rescan(inst, 1200);
     else schedule_rescan_with_backoff(inst);
@@ -2180,11 +2245,11 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
     report_characteristic_t *report;
     discovered_device_t *scan_device;
     if (event->irq != MODULE_BLE_IRQ_GATTC_NOTIFY) {
-        inst->ble_non_notify_event_count++;
-        inst->ble_last_non_notify_ms = now_ms(inst);
-        inst->ble_last_non_notify_irq = event->irq;
-        inst->ble_last_non_notify_status = event->status;
-        if (event->status != 0) inst->ble_done_error_count++;
+        inst->cold->ble_non_notify_event_count++;
+        inst->cold->ble_last_non_notify_ms = now_ms(inst);
+        inst->cold->ble_last_non_notify_irq = event->irq;
+        inst->cold->ble_last_non_notify_status = event->status;
+        if (event->status != 0) inst->cold->ble_done_error_count++;
         mark_status_dirty(inst);
     }
     switch (event->irq) {
@@ -2192,20 +2257,24 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
         handle_scan_result(inst, event);
         break;
     case MODULE_BLE_IRQ_SCAN_DONE:
+        if (!inst->scan_active) break; /* Completion of a cancelled scan. */
         inst->scan_active = 0;
-        if (inst->state.connected) {
+        finish_command_kind(inst, WORKER_COMMAND_SCAN, event->status ? "scan failed" : NULL);
+        if (inst->state.connected || inst->state.connecting) {
             inst->manual_scan = 0;
-            inst->phase = PHASE_READY;
             mark_status_dirty(inst);
-        } else if (!inst->state.connecting) {
-            if (inst->manual_scan) {
-                inst->phase = PHASE_SELECT_DEVICE;
-                mark_status_dirty(inst);
-            } else {
-                scan_device = select_auto_device(inst);
-                if (!scan_device || !connect_device(inst, scan_device)) {
-                    schedule_rescan_with_backoff(inst);
-                }
+            break;
+        }
+        if (inst->manual_scan) {
+            inst->phase = PHASE_SELECT_DEVICE;
+            mark_status_dirty(inst);
+        } else {
+            scan_device = event->status ? NULL : select_auto_device(inst);
+            if (!scan_device || !connect_device(inst, scan_device)) {
+                /* A manual Q34/Q36 connection gets one recovery scan, not an
+                 * unlimited auto-connect loop when the global switch is off. */
+                inst->notification_reconnect_pending = 0;
+                schedule_rescan_with_backoff(inst);
             }
         }
         break;
@@ -2297,8 +2366,7 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
                 channel->value_handle = event->value_handle;
                 channel->descriptor_end_handle = inst->vendor_end;
                 channel->properties = event->properties;
-                copy_text(channel->uuid, sizeof(channel->uuid),
-                          event->uuid, strlen(event->uuid));
+                channel->flydigi_nus_notify = text_equal(event->uuid, UUID_FLYDIGI_NUS_NOTIFY_TEXT);
                 inst->vendor_open_channel_index =
                     (uint8_t)(inst->vendor_channel_count - 1u);
             }
@@ -2469,26 +2537,26 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
                 find_vendor_channel(inst, event->value_handle);
         if (vendor_channel) {
             if (is_btp_mapping_mode_name(inst->state.name)) {
-                inst->btp_vendor_notify_count++;
+                inst->cold->btp_vendor_notify_count++;
                 inst->btp_last_vendor_notify_ms = now_ms(inst);
-                inst->btp_last_vendor_handle = event->value_handle;
-                bytes_to_hex(inst->btp_last_vendor_hex,
-                             sizeof(inst->btp_last_vendor_hex),
-                             event->data, event->data_len);
+                inst->cold->btp_last_vendor_handle = event->value_handle;
+                inst->cold->btp_last_vendor_len = event->data_len < HIDPAD_REPORT_CACHE_SIZE ?
+                    event->data_len : HIDPAD_REPORT_CACHE_SIZE;
+                memcpy(inst->cold->btp_last_vendor, event->data, inst->cold->btp_last_vendor_len);
                 if (event->data_len > 0) {
                     if (event->data_len >= 4u &&
                         event->data[0] == 0x11u &&
                         event->data[1] == 0x57u &&
                         event->data[2] == 0x44u &&
                         event->data[3] == 0x54u) {
-                        inst->btp_watchdog_reply_count++;
+                        inst->cold->btp_watchdog_reply_count++;
                     } else if (event->data[0] == 0x11u) {
-                        inst->btp_handshake_reply_count++;
-                        bytes_to_hex(inst->btp_last_handshake_hex,
-                                     sizeof(inst->btp_last_handshake_hex),
-                                     event->data, event->data_len);
+                        inst->cold->btp_handshake_reply_count++;
+                        inst->cold->btp_last_handshake_len = inst->cold->btp_last_vendor_len;
+                        memcpy(inst->cold->btp_last_handshake, event->data,
+                               inst->cold->btp_last_handshake_len);
                     } else if (event->data[0] == 0x21u) {
-                        inst->btp_heartbeat_reply_count++;
+                        inst->cold->btp_heartbeat_reply_count++;
                         inst->btp_missed_heartbeats = 0;
                         if (!inst->btp_handshake_sent &&
                             !inst->btp_handshake_pending) {
@@ -2506,7 +2574,7 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
             }
             inst->input_notify_count++;
             if (is_flydigi_mapping_mode_name(inst->state.name) &&
-                text_equal(vendor_channel->uuid, UUID_FLYDIGI_NUS_NOTIFY_TEXT)) {
+                vendor_channel->flydigi_nus_notify) {
                 if (event->data_len >= 2 && event->data[0] == 0xac &&
                     event->data[1] == 0xc0 && inst->flydigi_init_stage < 2) {
                     /* Official client follows the AC C0 device-info response
@@ -2522,7 +2590,6 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
             remember_input_packet(inst, event->value_handle,
                                   event->data, event->data_len);
             decode_vendor_input(inst, event->data, event->data_len);
-            mark_dirty(inst);
             break;
         }
         }
@@ -2536,12 +2603,13 @@ static void handle_event(hidpad_instance_t *inst, const module_ble_event_t *even
             if (!report_is_duplicate(report, event->data, event->data_len)) {
                 remember_input_packet(inst, report->value_handle,
                                       event->data, event->data_len);
-                mark_dirty(inst);
             }
             decode_hid(inst, report, event->data, event->data_len);
         }
         break;
     case MODULE_BLE_IRQ_ENCRYPTION_UPDATE:
+        finish_command_kind(inst, WORKER_COMMAND_PAIR,
+                            event->encrypted ? NULL : "BLE pairing/encryption failed");
         inst->state.encrypted = event->encrypted;
         mark_status_dirty(inst);
         if (inst->phase == PHASE_PAIRING) {
@@ -2778,25 +2846,25 @@ static void poll_btp_keepalive(hidpad_instance_t *inst)
     if (!inst->btp_handshake_pending) {
         inst->next_btp_keepalive_ms = now + next_delay;
     }
-    inst->btp_keepalive_attempt_count++;
+    inst->cold->btp_keepalive_attempt_count++;
     mark_status_dirty(inst);
     if (!inst->vendor_subscribed || !inst->vendor_write_handle ||
         !inst->host->ble.gattc_write ||
         (inst->vendor_write_properties &
          (MODULE_BLE_CHAR_PROP_WRITE_NO_RESPONSE | MODULE_BLE_CHAR_PROP_WRITE)) == 0) {
-        inst->btp_keepalive_error_count++;
-        inst->btp_keepalive_last_error = MODULE_ERR_UNSUPPORTED;
+        inst->cold->btp_keepalive_error_count++;
+        inst->cold->btp_keepalive_last_error = MODULE_ERR_UNSUPPORTED;
         return;
     }
     err = inst->host->ble.gattc_write(
         inst->session, inst->conn_handle, inst->vendor_write_handle,
         command, command_len, MODULE_BLE_WRITE_NO_RESPONSE);
-    inst->btp_keepalive_last_error = err;
+    inst->cold->btp_keepalive_last_error = err;
     if (err == MODULE_OK) {
         inst->keepalive_count++;
         if (sent_watchdog_now) {
             inst->btp_watchdog_sent = 1;
-            inst->btp_watchdog_command_count++;
+            inst->cold->btp_watchdog_command_count++;
         } else if (inst->btp_handshake_pending) {
             inst->btp_handshake_pending = 0;
             inst->btp_handshake_sent = 1;
@@ -2839,7 +2907,7 @@ static void poll_btp_keepalive(hidpad_instance_t *inst)
             inst->btp_init_stage = 3;
         }
     } else {
-        inst->btp_keepalive_error_count++;
+        inst->cold->btp_keepalive_error_count++;
         inst->next_btp_keepalive_ms = now + HIDPAD_BTP_INIT_GAP_MS;
     }
 }
@@ -2847,7 +2915,7 @@ static void poll_btp_keepalive(hidpad_instance_t *inst)
 static void poll_notification_reconnect(hidpad_instance_t *inst)
 {
     uint32_t now;
-    if (!inst || inst->profile != DEVICE_PROFILE_Q36 ||
+    if (!inst || inst->manual_scan || inst->profile != DEVICE_PROFILE_Q36 ||
         inst->phase != PHASE_READY || !inst->state.connected ||
         inst->input_notify_count != 0 || inst->subscribed_count == 0 ||
         inst->notification_reconnect_count != 0 ||
@@ -2868,7 +2936,25 @@ static void driver_poll(hidpad_instance_t *inst)
     uint32_t i;
     module_ble_event_t *event;
     if (!inst || !inst->started) return;
-    inst->driver_poll_count++;
+    /* Apply policy on the BLE worker, under its mutex. A current connection
+     * (including a manual connection in progress) is never interrupted. */
+    if (inst->auto_connect_dirty) {
+        inst->auto_connect_dirty = 0;
+        if (!inst->state.connected && !inst->state.connecting) {
+            if (!inst->auto_connect) {
+                if (!inst->manual_scan) {
+                    if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
+                    inst->scan_active = 0;
+                    inst->phase = PHASE_SELECT_DEVICE;
+                }
+            } else {
+                inst->manual_scan = 0;
+                if (!inst->scan_active) schedule_rescan(inst, 0);
+            }
+        }
+        mark_status_dirty(inst);
+    }
+    inst->cold->driver_poll_count++;
     event = &inst->event_work;
     event->size = sizeof(*event);
     for (i = 0; i < HIDPAD_EVENT_BUDGET; ++i) {
@@ -2883,8 +2969,15 @@ static void driver_poll(hidpad_instance_t *inst)
     }
     if (inst->phase == PHASE_WAIT_RESCAN && !inst->state.connected && !inst->state.connecting &&
         (int32_t)(now_ms(inst) - inst->next_scan_ms) >= 0) {
-        inst->direct_reconnect_pending = 0;
         start_scan(inst);
+    }
+    if (inst->cold->command_status == 1 &&
+        (int32_t)(now_ms(inst) - inst->cold->command_deadline_ms) >= 0) {
+        worker_command_t timed_out = inst->cold->command_kind;
+        finish_command(inst, "controller operation timed out");
+        if (timed_out == WORKER_COMMAND_CONNECT || timed_out == WORKER_COMMAND_PAIR) {
+            if (inst->state.connected) (void)inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+        }
     }
     poll_notification_reconnect(inst);
     poll_btp_keepalive(inst);
@@ -2920,167 +3013,155 @@ static void post_lua_event(hidpad_instance_t *inst)
     (void)inst->host->runtime.event_post(inst->lua, inst->event_ref);
 }
 
-static void worker_command_failed(hidpad_instance_t *inst, const char *error)
+static int link_initializing(const hidpad_instance_t *inst)
 {
-    inst->last_error = error;
-    mark_status_dirty(inst);
+    return inst->state.connecting || (inst->state.connected && inst->phase != PHASE_READY);
 }
 
-static void execute_worker_command(hidpad_instance_t *inst, worker_command_t command,
-                                   const char *address)
+static void worker_command_failed(hidpad_instance_t *inst, const char *error)
 {
-    uint8_t i;
+    finish_command(inst, error);
+}
+
+static int forget_peer(hidpad_instance_t *inst)
+{
     int32_t err;
+    if (!inst->host->ble.gap_forget_device) return MODULE_ERR_UNSUPPORTED;
+    if (!inst->state.address[0]) {
+        return inst->host->ble.gap_clear_bonds ?
+            inst->host->ble.gap_clear_bonds(inst->session) : MODULE_ERR_UNSUPPORTED;
+    }
+    err = inst->host->ble.gap_forget_device(inst->session, inst->peer_addr_type, inst->state.address);
+    return err == MODULE_ERR_NOT_FOUND ? MODULE_OK : err;
+}
+
+static void execute_worker_command(hidpad_instance_t *inst, worker_command_t command)
+{
+    int32_t err;
+    uint8_t was_manual;
     if (!inst || command == WORKER_COMMAND_NONE) return;
+    if (command == WORKER_COMMAND_START) {
+        err = driver_start(inst);
+        finish_command(inst, err == MODULE_OK ? NULL : "BLE transport busy");
+        return;
+    }
+    if (!inst->started) { worker_command_failed(inst, "hidpad is not started"); return; }
     switch (command) {
     case WORKER_COMMAND_RESCAN:
-        if (!inst->started || inst->state.connecting) {
-            worker_command_failed(inst, "rescan rejected while driver is busy");
-            break;
+        if (link_initializing(inst) || inst->scan_active || !inst->auto_connect) {
+            worker_command_failed(inst, "rescan rejected: busy or auto-connect disabled"); break;
         }
         inst->manual_scan = 0;
-        inst->direct_reconnect_pending = 0;
-        inst->force_scan_once = 1;
         inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
-        if (inst->scan_active) (void)inst->host->ble.gap_scan_stop(inst->session);
-        if (inst->state.connected && inst->conn_handle != 0xffff) {
-            (void)inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
-        } else {
-            inst->state.connecting = 0;
-            schedule_rescan(inst, 0);
-        }
+        if (inst->state.connected) {
+            if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK)
+                worker_command_failed(inst, "disconnect failed");
+        } else schedule_rescan(inst, 0);
         break;
     case WORKER_COMMAND_SCAN:
-        if (!inst->started || inst->state.connecting) {
-            worker_command_failed(inst, "scan rejected while driver is busy");
-            break;
+        if (link_initializing(inst) || inst->scan_active) {
+            worker_command_failed(inst, "scan rejected while driver is busy"); break;
         }
-        if (inst->scan_active) (void)inst->host->ble.gap_scan_stop(inst->session);
-        inst->scan_active = 0;
         inst->manual_scan = 1;
-        inst->direct_reconnect_pending = 0;
-        inst->force_scan_once = 1;
         inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
         inst->scan_result_count = 0;
         zero_bytes(inst->cold->scan_results, sizeof(inst->cold->scan_results));
         if (!start_scan(inst)) {
-            inst->manual_scan = 0;
+            if (inst->manual_scan) inst->phase = PHASE_SELECT_DEVICE;
             worker_command_failed(inst, "scan start failed");
         }
         break;
     case WORKER_COMMAND_CONNECT:
-        if (!inst->started || inst->state.connected || inst->state.connecting) {
-            worker_command_failed(inst, "connect rejected while driver is busy");
-            break;
+        if (inst->state.connected || inst->state.connecting || !inst->cold->command_device_valid) {
+            worker_command_failed(inst, "connect rejected while driver is busy"); break;
         }
-        for (i = 0; i < inst->scan_result_count; ++i) {
-            if (text_equal(inst->cold->scan_results[i].address, address)) {
-                copy_text(inst->cold->preferred_address, sizeof(inst->cold->preferred_address),
-                          address, strlen(address));
-                if (!connect_device(inst, &inst->cold->scan_results[i])) {
-                    worker_command_failed(inst, "connect failed");
-                }
-                return;
-            }
+        if (!connect_device(inst, &inst->cold->command_device)) {
+            worker_command_failed(inst, "connect failed");
+            schedule_rescan_with_backoff(inst);
         }
-        worker_command_failed(inst, "selected device is no longer available");
         break;
     case WORKER_COMMAND_DISCONNECT:
-        if (!inst->state.connected || inst->conn_handle == 0xffff) {
-            worker_command_failed(inst, "disconnect failed");
-            break;
+    case WORKER_COMMAND_FORGET:
+        if (inst->state.connecting) {
+            worker_command_failed(inst, "connection is still in progress"); break;
         }
-        /* An explicit Disconnect is a device-switch operation. Enter the
-         * same selection-only scan used by the UI so an allowed auto-connect
-         * candidate cannot immediately reclaim the single BLE session. */
-        inst->manual_scan = 1;
-        inst->force_scan_once = 1;
-        inst->direct_reconnect_pending = 0;
-        inst->scan_result_count = 0;
-        inst->last_error = NULL;
-        zero_bytes(inst->cold->scan_results, sizeof(inst->cold->scan_results));
-        if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
-            inst->manual_scan = 0;
-            inst->force_scan_once = 0;
-            worker_command_failed(inst, "disconnect failed");
+        was_manual = inst->manual_scan;
+        inst->manual_scan = 1; /* Explicit user action suspends auto-reconnect. */
+        inst->notification_reconnect_pending = 0;
+        if (inst->scan_active) (void)inst->host->ble.gap_scan_stop(inst->session);
+        inst->scan_active = 0;
+        if (inst->state.connected) {
+            inst->forget_pending = command == WORKER_COMMAND_FORGET;
+            err = inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
+            if (err != MODULE_OK) {
+                inst->forget_pending = 0;
+                inst->manual_scan = was_manual;
+                worker_command_failed(inst, "disconnect failed");
+            }
+        } else if (command == WORKER_COMMAND_FORGET) {
+            err = forget_peer(inst);
+            if (err == MODULE_OK || err == MODULE_ERR_NOT_FOUND) {
+                inst->cold->preferred_address[0] = 0;
+                inst->cold->preferred_metadata_valid = 0;
+                inst->phase = PHASE_SELECT_DEVICE;
+                finish_command(inst, NULL);
+            } else {
+                inst->manual_scan = was_manual;
+                worker_command_failed(inst, "forget controller failed");
+            }
+        } else {
+            inst->phase = PHASE_SELECT_DEVICE;
+            finish_command(inst, NULL); /* Disconnect is idempotent. */
         }
         break;
     case WORKER_COMMAND_PAIR:
-        if (!inst->state.connected || inst->conn_handle == 0xffff ||
-            inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK) {
+        if (!inst->state.connected || inst->phase != PHASE_READY ||
+            inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK)
             worker_command_failed(inst, "pair failed");
-        }
         break;
-    case WORKER_COMMAND_FORGET:
-        if (!inst->started || !inst->host->ble.gap_forget_device) {
-            worker_command_failed(inst, "forget controller is unsupported");
-            break;
-        }
-        if (!inst->state.address[0]) {
-            if (!inst->host->ble.gap_clear_bonds) {
-                worker_command_failed(inst, "controller address is missing");
-                break;
-            }
-            if (inst->scan_active) {
-                (void)inst->host->ble.gap_scan_stop(inst->session);
-                inst->scan_active = 0;
-            }
-            err = inst->host->ble.gap_clear_bonds(inst->session);
-            if (err != MODULE_OK && err != MODULE_ERR_NOT_FOUND) {
-                worker_command_failed(inst, "clear controller bonds failed");
-                break;
-            }
-            inst->last_error = NULL;
-            inst->state.disconnect_reason = 0;
-            schedule_rescan(inst, 0);
-            break;
-        }
-        if (inst->state.connected && inst->conn_handle != 0xffff) {
-            inst->forget_pending = 1;
-            if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
-                inst->forget_pending = 0;
-                worker_command_failed(inst, "disconnect before forgetting bond failed");
-            }
-            break;
-        }
-        if (inst->scan_active) {
-            (void)inst->host->ble.gap_scan_stop(inst->session);
-            inst->scan_active = 0;
-        }
-        err = inst->host->ble.gap_forget_device(
-            inst->session, inst->peer_addr_type, inst->state.address);
-        if (err == MODULE_ERR_NOT_FOUND && inst->host->ble.gap_clear_bonds) {
-            err = inst->host->ble.gap_clear_bonds(inst->session);
-            if (err == MODULE_ERR_NOT_FOUND) err = MODULE_OK;
-        }
-        if (err != MODULE_OK) {
-            worker_command_failed(inst, "forget controller bond failed");
-            break;
-        }
-        inst->last_error = NULL;
-        inst->state.disconnect_reason = 0;
-        schedule_rescan(inst, 0);
-        break;
-    default:
-        break;
+    default: worker_command_failed(inst, "unsupported command"); break;
     }
 }
 
-static int32_t queue_worker_command(hidpad_instance_t *inst, worker_command_t command,
-                                    const char *address)
+/* Called with the instance mutex held (or without a worker in legacy mode). */
+static int32_t prepare_command(hidpad_instance_t *inst, worker_command_t command,
+                               const char *address)
 {
-    if (!inst || !inst->worker_running) return MODULE_ERR_BAD_STATE;
-    if (!instance_lock(inst, 1000)) return MODULE_ERR_BUSY;
-    if (inst->worker_command != WORKER_COMMAND_NONE) {
-        instance_unlock(inst);
-        return MODULE_ERR_BUSY;
+    uint8_t i;
+    if (inst->cold->command_status == 1) return MODULE_ERR_BUSY;
+    inst->cold->command_device_valid = 0;
+    if (command == WORKER_COMMAND_CONNECT) {
+        for (i = 0; i < inst->scan_result_count; ++i) {
+            if (text_equal(inst->cold->scan_results[i].address, address)) {
+                inst->cold->command_device = inst->cold->scan_results[i];
+                inst->cold->command_device_valid = 1;
+                break;
+            }
+        }
+        if (!inst->cold->command_device_valid) return MODULE_ERR_NOT_FOUND;
     }
-    inst->worker_command = command;
-    copy_text(inst->worker_command_address, sizeof(inst->worker_command_address),
-              address ? address : "", address ? strlen(address) : 0);
-    instance_unlock(inst);
-    (void)inst->host->sync.give(inst->worker_wake);
+    if (++inst->cold->command_id == 0) ++inst->cold->command_id;
+    inst->cold->command_kind = command;
+    inst->cold->command_status = 1;
+    inst->cold->command_error = NULL;
+    inst->cold->command_deadline_ms = now_ms(inst) +
+        (command == WORKER_COMMAND_SCAN ? inst->scan_ms + 5000u : 45000u);
+    inst->last_error = NULL;
+    mark_status_dirty(inst);
     return MODULE_OK;
+}
+
+static uint32_t worker_wait_ms(const hidpad_instance_t *inst)
+{
+    int32_t remaining;
+    if (inst->scan_active) return 20;
+    if (inst->state.connected) return inst->phase == PHASE_READY ? 10 : 50;
+    if (inst->state.connecting || inst->cold->command_status == 1) return 50;
+    if (inst->phase == PHASE_WAIT_RESCAN) {
+        remaining = (int32_t)(inst->next_scan_ms - now_ms(inst));
+        return remaining <= 0 ? 1u : (remaining > 1000 ? 1000u : (uint32_t)remaining);
+    }
+    return 1000; /* Commands/stop wake the semaphore immediately. */
 }
 
 static void worker_main(void *arg)
@@ -3091,7 +3172,7 @@ static void worker_main(void *arg)
     if (!inst) return;
 
     if (instance_lock(inst, 1000)) {
-        if (driver_start(inst) != MODULE_OK) mark_status_dirty(inst);
+        execute_worker_command(inst, WORKER_COMMAND_START);
         should_post = inst->state_dirty != 0;
         instance_unlock(inst);
     }
@@ -3100,16 +3181,11 @@ static void worker_main(void *arg)
     while (!inst->worker_stop) {
         if (instance_lock(inst, 1000)) {
             worker_command_t command = inst->worker_command;
-            char address[18];
-            copy_text(address, sizeof(address), inst->worker_command_address,
-                      strlen(inst->worker_command_address));
             inst->worker_command = WORKER_COMMAND_NONE;
-            inst->worker_command_address[0] = 0;
-            execute_worker_command(inst, command, address);
+            execute_worker_command(inst, command);
             driver_poll(inst);
             should_post = inst->state_dirty != 0;
-            wait_ms = inst->phase == PHASE_READY ? 10u :
-                      (inst->phase == PHASE_SCANNING ? 20u : 50u);
+            wait_ms = worker_wait_ms(inst);
             instance_unlock(inst);
         }
         if (should_post) post_lua_event(inst);
@@ -3125,7 +3201,6 @@ static void worker_main(void *arg)
     }
     if (should_post) post_lua_event(inst);
     inst->worker_task = NULL;
-    inst->worker_running = 0;
     (void)inst->host->sync.give(inst->worker_stopped);
 }
 
@@ -3144,13 +3219,22 @@ static int32_t start_worker(hidpad_instance_t *inst)
 {
     int32_t err;
     if (!inst || !runtime_event_mode_supported(inst)) return MODULE_ERR_UNSUPPORTED;
-    if (inst->worker_running) return MODULE_OK;
+    if (inst->worker_running) {
+        if (!instance_lock(inst, 1000)) return MODULE_ERR_BUSY;
+        err = inst->started ? MODULE_OK : prepare_command(inst, WORKER_COMMAND_START, NULL);
+        if (err == MODULE_OK && !inst->started) inst->worker_command = WORKER_COMMAND_START;
+        instance_unlock(inst);
+        (void)inst->host->sync.give(inst->worker_wake);
+        return err;
+    }
     destroy_worker_sync(inst);
     err = inst->host->sync.create_mutex(&inst->worker_mutex);
     if (err != MODULE_OK) goto failed;
     err = inst->host->sync.create_counting(1, 0, &inst->worker_wake);
     if (err != MODULE_OK) goto failed;
     err = inst->host->sync.create_counting(1, 0, &inst->worker_stopped);
+    if (err != MODULE_OK) goto failed;
+    err = prepare_command(inst, WORKER_COMMAND_START, NULL);
     if (err != MODULE_OK) goto failed;
     inst->worker_stop = 0;
     inst->worker_running = 1;
@@ -3161,6 +3245,7 @@ static int32_t start_worker(hidpad_instance_t *inst)
     if (err == MODULE_OK) return MODULE_OK;
     inst->worker_running = 0;
 failed:
+    finish_command(inst, "hidpad worker start failed");
     destroy_worker_sync(inst);
     return err;
 }
@@ -3171,6 +3256,7 @@ static void stop_worker(hidpad_instance_t *inst)
     inst->worker_stop = 1;
     (void)inst->host->sync.give(inst->worker_wake);
     (void)inst->host->sync.take(inst->worker_stopped, MODULE_WAIT_FOREVER);
+    inst->worker_running = 0;
     destroy_worker_sync(inst);
 }
 
@@ -3203,34 +3289,34 @@ static int driver_start(hidpad_instance_t *inst)
         return err;
     }
     inst->started = 1;
+    inst->manual_scan = 0;
+    inst->auto_connect_dirty = 0;
     inst->conn_handle = 0xffff;
     inst->state_dirty = 1;
     inst->status_dirty = 1;
     inst->last_error = NULL;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->keepalive_count = 0;
-    inst->connection_params_attempt_count = 0;
-    inst->connection_params_last_error = MODULE_ERR_NOT_FOUND;
-    inst->driver_poll_count = 0;
-    inst->btp_keepalive_attempt_count = 0;
-    inst->btp_keepalive_error_count = 0;
-    inst->btp_keepalive_last_error = MODULE_OK;
-    inst->btp_vendor_notify_count = 0;
+    inst->cold->connection_params_attempt_count = 0;
+    inst->cold->connection_params_last_error = MODULE_ERR_NOT_FOUND;
+    inst->cold->driver_poll_count = 0;
+    inst->cold->btp_keepalive_attempt_count = 0;
+    inst->cold->btp_keepalive_error_count = 0;
+    inst->cold->btp_keepalive_last_error = MODULE_OK;
+    inst->cold->btp_vendor_notify_count = 0;
     inst->btp_last_vendor_notify_ms = 0;
-    inst->btp_heartbeat_reply_count = 0;
-    inst->btp_handshake_reply_count = 0;
-    inst->btp_watchdog_command_count = 0;
-    inst->btp_watchdog_reply_count = 0;
-    inst->btp_input_read_count = 0;
-    inst->ble_non_notify_event_count = 0;
-    inst->ble_last_non_notify_ms = 0;
-    inst->ble_done_error_count = 0;
-    inst->ble_last_non_notify_irq = 0;
-    inst->ble_last_non_notify_status = 0;
+    inst->cold->btp_heartbeat_reply_count = 0;
+    inst->cold->btp_handshake_reply_count = 0;
+    inst->cold->btp_watchdog_command_count = 0;
+    inst->cold->btp_watchdog_reply_count = 0;
+    inst->cold->btp_input_read_count = 0;
+    inst->cold->ble_non_notify_event_count = 0;
+    inst->cold->ble_last_non_notify_ms = 0;
+    inst->cold->ble_done_error_count = 0;
+    inst->cold->ble_last_non_notify_irq = 0;
+    inst->cold->ble_last_non_notify_status = 0;
     inst->notification_reconnect_count = 0;
     inst->notification_reconnect_pending = 0;
-    inst->direct_reconnect_pending = 0;
-    inst->force_scan_once = 0;
     clear_controls(inst);
     reset_gatt(inst);
     /* Always rediscover before connecting. This keeps GATT initialization in
@@ -3241,7 +3327,10 @@ static int driver_start(hidpad_instance_t *inst)
 
 static void driver_stop(hidpad_instance_t *inst)
 {
-    if (!inst || !inst->started) return;
+    if (!inst) return;
+    inst->worker_command = WORKER_COMMAND_NONE;
+    finish_command(inst, "service stopped");
+    if (!inst->started) return;
     if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
     if (inst->state.connected && inst->conn_handle != 0xffff) {
         inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
@@ -3250,8 +3339,6 @@ static void driver_stop(hidpad_instance_t *inst)
     inst->session = 0;
     inst->started = 0;
     inst->scan_active = 0;
-    inst->direct_reconnect_pending = 0;
-    inst->force_scan_once = 0;
     inst->state.connected = 0;
     inst->state.connecting = 0;
     inst->phase = PHASE_STOPPED;
@@ -3295,7 +3382,6 @@ static void set_string_field(lua_State *L, const hidpad_host_api_t *host,
 static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_index)
 {
     const hidpad_host_api_t *host = inst->host;
-    char report_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
     set_integer_at(L, host, table_index, "seq", inst->state.seq);
     set_integer_at(L, host, table_index, "timestamp_ms", inst->state.timestamp_ms);
     set_integer_at(L, host, table_index, "buttons", inst->state.buttons);
@@ -3308,9 +3394,49 @@ static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_in
     set_integer_at(L, host, table_index, "rt", inst->state.rt);
     set_integer_at(L, host, table_index, "report_id", inst->state.report_id);
     set_integer_at(L, host, table_index, "notify_count", inst->input_notify_count);
-    set_integer_at(L, host, table_index, "last_report_handle", inst->last_report_handle);
-    set_integer_at(L, host, table_index, "last_report_len", inst->last_report_len);
-    set_string_at(L, host, table_index, "last_report_hex", inst->last_report_hex);
+}
+
+static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)
+{
+    const hidpad_host_api_t *host = inst->host;
+    fill_input_state(L, inst, table_index);
+    set_boolean_at(L, host, table_index, "started", inst->started);
+    set_boolean_at(L, host, table_index, "ready", inst->state.connected && inst->phase == PHASE_READY);
+    set_boolean_at(L, host, table_index, "scanning", inst->scan_active);
+    set_boolean_at(L, host, table_index, "auto_connect", inst->auto_connect);
+    set_integer_at(L, host, table_index, "command_id", inst->cold->command_id);
+    set_string_at(L, host, table_index, "command_kind", command_text(inst->cold->command_kind));
+    set_string_at(L, host, table_index, "command_status", inst->cold->command_status == 1 ? "pending" :
+                  inst->cold->command_status == 2 ? "succeeded" : inst->cold->command_status == 3 ? "failed" : "none");
+    set_string_at(L, host, table_index, "command_error", inst->cold->command_error);
+    set_boolean_at(L, host, table_index, "connected", inst->state.connected);
+    set_boolean_at(L, host, table_index, "connecting", inst->state.connecting);
+    set_boolean_at(L, host, table_index, "encrypted", inst->state.encrypted);
+    set_integer_at(L, host, table_index, "disconnect_reason", inst->state.disconnect_reason);
+    set_boolean_at(L, host, table_index, "manual_scan", inst->manual_scan);
+    set_integer_at(L, host, table_index, "scan_count", inst->scan_result_count);
+    set_integer_at(L, host, table_index, "keepalive_count", inst->keepalive_count);
+    set_boolean_at(L, host, table_index, "keepalive_supported",
+                   is_btp_mapping_mode_name(inst->state.name) ?
+                   (inst->vendor_subscribed && inst->vendor_write_handle != 0) :
+                   inst->control_point_handle != 0);
+    set_string_at(L, host, table_index, "phase", phase_text(inst->phase));
+    set_string_at(L, host, table_index, "profile", profile_text(inst->profile));
+    set_string_at(L, host, table_index, "address", inst->state.address);
+    set_string_at(L, host, table_index, "name", inst->state.name);
+    set_integer_at(L, host, table_index, "addr_type", inst->peer_addr_type);
+    set_string_at(L, host, table_index, "last_error", inst->last_error);
+}
+
+static void fill_diagnostics(lua_State *L, hidpad_instance_t *inst, int table_index)
+{
+    const hidpad_host_api_t *host = inst->host;
+    char report_hex[HIDPAD_REPORT_CACHE_SIZE * 2u + 1u];
+    bytes_to_hex(report_hex, sizeof(report_hex), inst->cold->last_report,
+                 inst->cold->last_report_len < HIDPAD_REPORT_CACHE_SIZE ? inst->cold->last_report_len : HIDPAD_REPORT_CACHE_SIZE);
+    set_integer_at(L, host, table_index, "last_report_handle", inst->cold->last_report_handle);
+    set_integer_at(L, host, table_index, "last_report_len", inst->cold->last_report_len);
+    set_string_at(L, host, table_index, "last_report_hex", report_hex);
     if (inst->report_count > 0) {
         report_characteristic_t *report = &inst->reports[0];
         bytes_to_hex(report_hex, sizeof(report_hex), report->last_report,
@@ -3357,24 +3483,10 @@ static void fill_input_state(lua_State *L, hidpad_instance_t *inst, int table_in
         set_integer_at(L, host, table_index, "report1_notify_count", 0);
         set_string_at(L, host, table_index, "report1_hex", "");
     }
-}
-
-static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)
-{
-    const hidpad_host_api_t *host = inst->host;
-    fill_input_state(L, inst, table_index);
-    set_boolean_at(L, host, table_index, "started", inst->started);
-    set_boolean_at(L, host, table_index, "connected", inst->state.connected);
-    set_boolean_at(L, host, table_index, "connecting", inst->state.connecting);
-    set_boolean_at(L, host, table_index, "encrypted", inst->state.encrypted);
-    set_integer_at(L, host, table_index, "disconnect_reason", inst->state.disconnect_reason);
-    set_boolean_at(L, host, table_index, "manual_scan", inst->manual_scan);
-    set_integer_at(L, host, table_index, "scan_count", inst->scan_result_count);
-    set_integer_at(L, host, table_index, "keepalive_count", inst->keepalive_count);
     set_integer_at(L, host, table_index, "connection_params_attempt_count",
-                   inst->connection_params_attempt_count);
+                   inst->cold->connection_params_attempt_count);
     set_integer_at(L, host, table_index, "connection_params_last_error",
-                   inst->connection_params_last_error);
+                   inst->cold->connection_params_last_error);
     set_integer_at(L, host, table_index, "connection_params_min",
                    is_btp_mapping_mode_name(inst->state.name) ?
                    0 : HIDPAD_CONN_INTERVAL_MIN);
@@ -3382,47 +3494,47 @@ static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)
                    is_btp_mapping_mode_name(inst->state.name) ?
                    0 : HIDPAD_CONN_INTERVAL_MAX);
     set_integer_at(L, host, table_index, "btp_keepalive_attempt_count",
-                   inst->btp_keepalive_attempt_count);
+                   inst->cold->btp_keepalive_attempt_count);
     set_integer_at(L, host, table_index, "btp_keepalive_error_count",
-                   inst->btp_keepalive_error_count);
+                   inst->cold->btp_keepalive_error_count);
     set_integer_at(L, host, table_index, "btp_keepalive_last_error",
-                   inst->btp_keepalive_last_error);
-    set_integer_at(L, host, table_index, "driver_poll_count", inst->driver_poll_count);
+                   inst->cold->btp_keepalive_last_error);
+    set_integer_at(L, host, table_index, "driver_poll_count", inst->cold->driver_poll_count);
     set_integer_at(L, host, table_index, "clock_ms", now_ms(inst));
     set_integer_at(L, host, table_index, "next_btp_keepalive_ms",
                    inst->next_btp_keepalive_ms);
     set_integer_at(L, host, table_index, "btp_vendor_notify_count",
-                   inst->btp_vendor_notify_count);
+                   inst->cold->btp_vendor_notify_count);
     set_integer_at(L, host, table_index, "btp_last_vendor_notify_ms",
                    inst->btp_last_vendor_notify_ms);
     set_integer_at(L, host, table_index, "btp_heartbeat_reply_count",
-                   inst->btp_heartbeat_reply_count);
+                   inst->cold->btp_heartbeat_reply_count);
     set_integer_at(L, host, table_index, "btp_handshake_reply_count",
-                   inst->btp_handshake_reply_count);
+                   inst->cold->btp_handshake_reply_count);
     set_integer_at(L, host, table_index, "btp_watchdog_command_count",
-                   inst->btp_watchdog_command_count);
+                   inst->cold->btp_watchdog_command_count);
     set_integer_at(L, host, table_index, "btp_watchdog_reply_count",
-                   inst->btp_watchdog_reply_count);
-    set_string_at(L, host, table_index, "btp_last_handshake_hex",
-                  inst->btp_last_handshake_hex);
+                   inst->cold->btp_watchdog_reply_count);
+    bytes_to_hex(report_hex, sizeof(report_hex), inst->cold->btp_last_handshake, inst->cold->btp_last_handshake_len);
+    set_string_at(L, host, table_index, "btp_last_handshake_hex", report_hex);
     set_integer_at(L, host, table_index, "btp_input_read_count",
-                   inst->btp_input_read_count);
+                   inst->cold->btp_input_read_count);
     set_integer_at(L, host, table_index, "ble_non_notify_event_count",
-                   inst->ble_non_notify_event_count);
+                   inst->cold->ble_non_notify_event_count);
     set_integer_at(L, host, table_index, "ble_last_non_notify_ms",
-                   inst->ble_last_non_notify_ms);
+                   inst->cold->ble_last_non_notify_ms);
     set_integer_at(L, host, table_index, "ble_done_error_count",
-                   inst->ble_done_error_count);
+                   inst->cold->ble_done_error_count);
     set_integer_at(L, host, table_index, "ble_last_non_notify_irq",
-                   inst->ble_last_non_notify_irq);
+                   inst->cold->ble_last_non_notify_irq);
     set_integer_at(L, host, table_index, "ble_last_non_notify_status",
-                   inst->ble_last_non_notify_status);
+                   inst->cold->ble_last_non_notify_status);
     set_integer_at(L, host, table_index, "btp_input_handle",
                    inst->btp_input_handle);
     set_integer_at(L, host, table_index, "btp_last_vendor_handle",
-                   inst->btp_last_vendor_handle);
-    set_string_at(L, host, table_index, "btp_last_vendor_hex",
-                  inst->btp_last_vendor_hex);
+                   inst->cold->btp_last_vendor_handle);
+    bytes_to_hex(report_hex, sizeof(report_hex), inst->cold->btp_last_vendor, inst->cold->btp_last_vendor_len);
+    set_string_at(L, host, table_index, "btp_last_vendor_hex", report_hex);
     set_integer_at(L, host, table_index, "btp_missed_heartbeats",
                    inst->btp_missed_heartbeats);
     set_boolean_at(L, host, table_index, "btp_handshake_pending",
@@ -3440,16 +3552,6 @@ static void fill_state(lua_State *L, hidpad_instance_t *inst, int table_index)
                    inst->vendor_write_handle);
     set_integer_at(L, host, table_index, "vendor_subscribed_count",
                    inst->vendor_subscribed_count);
-    set_boolean_at(L, host, table_index, "keepalive_supported",
-                   is_btp_mapping_mode_name(inst->state.name) ?
-                   (inst->vendor_subscribed && inst->vendor_write_handle != 0) :
-                   inst->control_point_handle != 0);
-    set_string_at(L, host, table_index, "phase", phase_text(inst->phase));
-    set_string_at(L, host, table_index, "profile", profile_text(inst->profile));
-    set_string_at(L, host, table_index, "address", inst->state.address);
-    set_string_at(L, host, table_index, "name", inst->state.name);
-    set_integer_at(L, host, table_index, "addr_type", inst->peer_addr_type);
-    set_string_at(L, host, table_index, "last_error", inst->last_error);
 }
 
 static void push_state(lua_State *L, hidpad_instance_t *inst)
@@ -3481,18 +3583,28 @@ static int l_start(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
     if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (!instance_lock(inst, 1000)) return push_error(L, &s_host, "hidpad state is busy");
+    if (inst->started) {
+        instance_unlock(inst);
+        s_host.lua.pushboolean(L, 1);
+        return 1;
+    }
     if (s_host.lua.gettop(L) >= 1 && s_host.lua.isnumber(L, 1)) {
         int64_t scan_ms = s_host.lua.tointeger(L, 1);
         if (scan_ms >= 1000 && scan_ms <= 60000) inst->scan_ms = (uint32_t)scan_ms;
     }
+    instance_unlock(inst);
     if (runtime_event_mode_supported(inst)) {
         int32_t err = start_worker(inst);
         if (err != MODULE_OK) return push_error(L, &s_host, "hidpad worker start failed");
-    } else if (driver_start(inst) != MODULE_OK) {
-        return push_error(L, &s_host, inst->last_error);
+    } else {
+        if (prepare_command(inst, WORKER_COMMAND_START, NULL) != MODULE_OK)
+            return push_error(L, &s_host, "controller operation is pending");
+        execute_worker_command(inst, WORKER_COMMAND_START);
     }
     s_host.lua.pushboolean(L, 1);
-    return 1;
+    s_host.lua.pushinteger(L, inst->cold->command_id);
+    return 2;
 }
 
 static int l_poll(lua_State *L)
@@ -3566,58 +3678,38 @@ static int l_state(lua_State *L)
     return 1;
 }
 
-static int l_rescan(lua_State *L)
+static int submit_command(lua_State *L, worker_command_t command, const char *address)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_RESCAN, NULL) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
+    int32_t err;
+    uint32_t id;
+    if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (!instance_lock(inst, 1000)) return push_error(L, &s_host, "hidpad state is busy");
+    err = prepare_command(inst, command, address);
+    id = inst->cold->command_id;
+    if (err == MODULE_OK) {
+        if (runtime_event_mode_supported(inst) && inst->worker_running) inst->worker_command = command;
+        else execute_worker_command(inst, command);
     }
-    if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
-    if (inst->state.connecting) return push_error(L, &s_host, "connection is still in progress");
-    inst->manual_scan = 0;
-    inst->direct_reconnect_pending = 0;
-    inst->force_scan_once = 1;
-    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
-    if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
-    if (inst->state.connected && inst->conn_handle != 0xffff) {
-        inst->host->ble.gap_disconnect(inst->session, inst->conn_handle);
-    } else {
-        inst->state.connecting = 0;
-        schedule_rescan(inst, 0);
-    }
+    instance_unlock(inst);
+    if (err != MODULE_OK) return push_error(L, &s_host,
+        err == MODULE_ERR_NOT_FOUND ? "selected device is no longer available" : "controller operation is pending");
+    if (inst->worker_wake) (void)inst->host->sync.give(inst->worker_wake);
     s_host.lua.pushboolean(L, 1);
-    return 1;
+    s_host.lua.pushinteger(L, id);
+    return 2;
 }
 
-static int l_scan(lua_State *L)
+static int l_rescan(lua_State *L) { return submit_command(L, WORKER_COMMAND_RESCAN, NULL); }
+static int l_scan(lua_State *L) { return submit_command(L, WORKER_COMMAND_SCAN, NULL); }
+
+static int l_diagnostics(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_SCAN, NULL) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
-    if (inst->state.connecting) return push_error(L, &s_host, "connection is still in progress");
-    if (inst->scan_active) inst->host->ble.gap_scan_stop(inst->session);
-    inst->scan_active = 0;
-    inst->manual_scan = 1;
-    inst->direct_reconnect_pending = 0;
-    inst->force_scan_once = 1;
-    inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
-    inst->scan_result_count = 0;
-    zero_bytes(inst->cold->scan_results, sizeof(inst->cold->scan_results));
-    if (!start_scan(inst)) {
-        inst->manual_scan = 0;
-        return push_error(L, &s_host, "scan start failed");
-    }
-    s_host.lua.pushboolean(L, 1);
+    if (!inst || !instance_lock(inst, 1000)) return push_error(L, &s_host, "hidpad state is busy");
+    s_host.lua.createtable(L, 0, 48);
+    fill_diagnostics(L, inst, -2);
+    instance_unlock(inst);
     return 1;
 }
 
@@ -3664,37 +3756,8 @@ static int l_scan_device(lua_State *L)
 
 static int l_connect(lua_State *L)
 {
-    hidpad_instance_t *inst = lua_instance(L, &s_host);
-    const char *address;
-    uint8_t i;
-    if (!inst) return push_error(L, &s_host, "hidpad instance missing");
-    if (s_host.lua.gettop(L) < 1 || !s_host.lua.isstring(L, 1)) {
-        return push_error(L, &s_host, "device address missing");
-    }
-    address = s_host.lua.tostring(L, 1);
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_CONNECT, address) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (!inst->started) return push_error(L, &s_host, "hidpad is not started");
-    if (inst->state.connected || inst->state.connecting) {
-        return push_error(L, &s_host, "gamepad is already connected or connecting");
-    }
-    for (i = 0; i < inst->scan_result_count; ++i) {
-        if (text_equal(inst->cold->scan_results[i].address, address)) {
-            copy_text(inst->cold->preferred_address, sizeof(inst->cold->preferred_address),
-                      address, strlen(address));
-            if (!connect_device(inst, &inst->cold->scan_results[i])) {
-                return push_error(L, &s_host, "connect failed");
-            }
-            s_host.lua.pushboolean(L, 1);
-            return 1;
-        }
-    }
-    return push_error(L, &s_host, "selected device is no longer available");
+    if (!s_host.lua.isstring(L, 1)) return push_error(L, &s_host, "device address missing");
+    return submit_command(L, WORKER_COMMAND_CONNECT, s_host.lua.tostring(L, 1));
 }
 
 static int l_set_preferred(lua_State *L)
@@ -3715,7 +3778,6 @@ static int l_set_preferred(lua_State *L)
               address, strlen(address));
     inst->cold->preferred_metadata_valid = 0;
     inst->cold->preferred_name[0] = 0;
-    if (!address[0]) inst->direct_reconnect_pending = 0;
     if (s_host.lua.gettop(L) >= 2 && s_host.lua.isnumber(L, 2) &&
         s_host.lua.gettop(L) >= 3 && s_host.lua.isstring(L, 3)) {
         profile = s_host.lua.tostring(L, 3);
@@ -3737,105 +3799,27 @@ static int l_set_preferred(lua_State *L)
     return 1;
 }
 
-static int l_disconnect(lua_State *L)
+static int l_set_auto_connect(lua_State *L)
 {
     hidpad_instance_t *inst = lua_instance(L, &s_host);
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_DISCONNECT, NULL) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
+    uint8_t enabled;
+    if (!inst) return push_error(L, &s_host, "hidpad instance missing");
+    if (!s_host.lua.isnumber(L, 1)) return push_error(L, &s_host, "expected 0 or 1");
+    enabled = s_host.lua.tointeger(L, 1) != 0;
+    if (!instance_lock(inst, 1000)) return push_error(L, &s_host, "hidpad state is busy");
+    if (inst->auto_connect != enabled) {
+        inst->auto_connect = enabled;
+        inst->auto_connect_dirty = 1;
     }
-    if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) {
-        return push_error(L, &s_host, "gamepad is not connected");
-    }
-    if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
-        return push_error(L, &s_host, "disconnect failed");
-    }
+    instance_unlock(inst);
+    if (inst->worker_wake) (void)inst->host->sync.give(inst->worker_wake);
     s_host.lua.pushboolean(L, 1);
     return 1;
 }
 
-static int l_pair(lua_State *L)
-{
-    hidpad_instance_t *inst = lua_instance(L, &s_host);
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_PAIR, NULL) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (!inst || !inst->state.connected || inst->conn_handle == 0xffff) {
-        return push_error(L, &s_host, "gamepad is not connected");
-    }
-    if (inst->host->ble.gap_pair(inst->session, inst->conn_handle, 1) != MODULE_OK) {
-        return push_error(L, &s_host, "pair failed");
-    }
-    s_host.lua.pushboolean(L, 1);
-    return 1;
-}
-
-static int l_forget(lua_State *L)
-{
-    hidpad_instance_t *inst = lua_instance(L, &s_host);
-    int32_t err;
-    if (runtime_event_mode_supported(inst)) {
-        if (queue_worker_command(inst, WORKER_COMMAND_FORGET, NULL) != MODULE_OK) {
-            return push_error(L, &s_host, "hidpad command queue is busy");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (!inst || !inst->started) return push_error(L, &s_host, "hidpad is not started");
-    if (!inst->host->ble.gap_forget_device) {
-        return push_error(L, &s_host, "firmware does not support forgetting bonds");
-    }
-    if (!inst->state.address[0]) {
-        if (!inst->host->ble.gap_clear_bonds) {
-            return push_error(L, &s_host, "controller address is missing");
-        }
-        if (inst->scan_active) {
-            inst->host->ble.gap_scan_stop(inst->session);
-            inst->scan_active = 0;
-        }
-        err = inst->host->ble.gap_clear_bonds(inst->session);
-        if (err != MODULE_OK && err != MODULE_ERR_NOT_FOUND) {
-            return push_error(L, &s_host, "clear controller bonds failed");
-        }
-        inst->last_error = NULL;
-        inst->state.disconnect_reason = 0;
-        schedule_rescan(inst, 0);
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (inst->state.connected && inst->conn_handle != 0xffff) {
-        inst->forget_pending = 1;
-        if (inst->host->ble.gap_disconnect(inst->session, inst->conn_handle) != MODULE_OK) {
-            inst->forget_pending = 0;
-            return push_error(L, &s_host, "disconnect before forgetting bond failed");
-        }
-        s_host.lua.pushboolean(L, 1);
-        return 1;
-    }
-    if (inst->scan_active) {
-        inst->host->ble.gap_scan_stop(inst->session);
-        inst->scan_active = 0;
-    }
-    err = inst->host->ble.gap_forget_device(
-        inst->session, inst->peer_addr_type, inst->state.address);
-    if (err == MODULE_ERR_NOT_FOUND && inst->host->ble.gap_clear_bonds) {
-        err = inst->host->ble.gap_clear_bonds(inst->session);
-        if (err == MODULE_ERR_NOT_FOUND) err = MODULE_OK;
-    }
-    if (err != MODULE_OK) return push_error(L, &s_host, "forget controller bond failed");
-    inst->last_error = NULL;
-    inst->state.disconnect_reason = 0;
-    schedule_rescan(inst, 0);
-    s_host.lua.pushboolean(L, 1);
-    return 1;
-}
+static int l_disconnect(lua_State *L) { return submit_command(L, WORKER_COMMAND_DISCONNECT, NULL); }
+static int l_pair(lua_State *L) { return submit_command(L, WORKER_COMMAND_PAIR, NULL); }
+static int l_forget(lua_State *L) { return submit_command(L, WORKER_COMMAND_FORGET, NULL); }
 
 static int l_stop(lua_State *L)
 {
@@ -3892,6 +3876,7 @@ HIDPAD_EXPORT int32_t module_create_v2(module_host_resolve_v2_fn resolve,
         return MODULE_ERR_NO_MEMORY;
     }
     inst->owner_token = info->owner_token;
+    inst->auto_connect = 1;
     inst->scan_ms = 8000;
     inst->rescan_backoff_ms = HIDPAD_RESCAN_MIN_MS;
     inst->conn_handle = 0xffff;
@@ -3916,12 +3901,14 @@ HIDPAD_EXPORT int32_t module_luaopen_v1(void *instance, lua_State *L)
     set_function(L, "poll", l_poll, inst);
     set_function(L, "on_event", l_on_event, inst);
     set_function(L, "state", l_state, inst);
+    set_function(L, "diagnostics", l_diagnostics, inst);
     set_function(L, "rescan", l_rescan, inst);
     set_function(L, "scan", l_scan, inst);
     set_function(L, "scan_count", l_scan_count, inst);
     set_function(L, "scan_device", l_scan_device, inst);
     set_function(L, "connect", l_connect, inst);
     set_function(L, "set_preferred", l_set_preferred, inst);
+    set_function(L, "set_auto_connect", l_set_auto_connect, inst);
     set_function(L, "disconnect", l_disconnect, inst);
     set_function(L, "pair", l_pair, inst);
     set_function(L, "forget", l_forget, inst);
