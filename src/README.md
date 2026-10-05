@@ -1,12 +1,17 @@
-# HID Pad Service 1.1.0 / Module 1.1.50
+# HID Pad Service 1.1.1 / Module 1.1.51
 
 ## 本次更新
 
+- 1.1.1 恢复自动连接回退：优先连接已保存地址；未发现该地址时，仍可自动连接
+  名称匹配 Xbox、Q34/Q36、BTP 或 Flydigi 的手柄。保存地址不再限制其他候选。
+- 1.1.1 暂时关闭 Q34/Q36 在 2.5 秒无输入通知后主动断线恢复的逻辑
+  （`HIDPAD_ENABLE_NOTIFY_RECONNECT=0`）。真机观察到连接可保持，但全零扫描地址
+  的根因和按键输入仍待进一步验证；此开关不影响意外掉线后的普通自动连接。
 - Web 页面拆为 `package/main.html`，支持简中、繁中、英文、日文；默认读取
   `/sd/settings.json`，不存在有效语言字段时回退 `/sd/apps/settings.json`。
   接受 `language`、`locale`、`lang` 字段。右上角语言选择仅保存在浏览器。
-- `config.json` 新增默认开启的 `auto_connect`。关闭后仍可手动连接；Q34/Q36
-  的一次无输入恢复独立于此开关。手动断开暂停重连，意外掉线才按策略重连。
+- `config.json` 的 `auto_connect` 默认开启，关闭后仍可手动连接。
+  手动断开暂停重连，意外掉线才按策略重连。
 - 扫描使用独立状态，不覆盖配对、发现或订阅阶段；只有输入初始化完成才 `ready`。
 - C 命令返回 `true, command_id`；Web/IPC 状态提供 `command_id`、`command_kind`、
   `command_status`、`command_error`。`pending` 表示已接收，`succeeded`/`failed`
@@ -42,7 +47,8 @@ BLE HID/Android 智连模式的兼容链路。
 
 - 所有手柄由 `.so` 独占一个 BLE session，连接后使用加密配对。
 - CCCD 始终通过 descriptor discovery 查找 `0x2902`，不猜测 `value_handle + 1`。
-- 手动扫描只更新设备列表；用户选中设备后保存其地址，以后只自动重连该设备。
+- 手动扫描只更新设备列表；连接就绪后保存首选地址，自动扫描优先连接它，
+  未发现时可连接其他名称匹配的受支持手柄。
 - 驱动把所有协议统一为按键位图、双摇杆和 LT/RT，Lua 层再应用死区、校准和映射。
 
 ## 兼容总览
@@ -51,7 +57,7 @@ BLE HID/Android 智连模式的兼容链路。
 | --- | --- | --- | --- |
 | Xbox BLE | 名称包含 `Xbox`，或 Microsoft company/appearance | 发现 `0x1812`，只订阅第一个可 Notify 的 `0x2A4D` | Xbox 16 字节基础报告 |
 | Q34/Q34U | 名称包含 `Q34` 或 `ShanWan` | 订阅所有 Input Report CCCD，可 READ 轮询兜底 | Report Map 或 Q34U 10 字节报告 |
-| Q36 | 名称包含 `Q36` 或 `ShanWan` | 与 Q34 相同，必要时仅做一次加密重连 | Q36 Report Map 语义或 ShanWan 10 字节报告 |
+| Q36 | 名称包含 `Q36` 或 `ShanWan` | 与 Q34 相同；1.1.1 暂停无输入主动重连 | Q36 Report Map 语义或 ShanWan 10 字节报告 |
 | 飞智 BLE HID/智连 | 名称包含 `Flydigi` | HOGP 后枚举非标准服务，订阅全部 Notify/Indicate，通过 NUS RX 初始化 | 智连 14/20 字节报告，并兼容飞智 V2 |
 | 其它标准 BLE HID | 广播 `0x1812` 并具有手柄名称/appearance | 标准 HOGP，订阅所有 Input Report | 按 Report Map 通用解码 |
 
@@ -94,8 +100,9 @@ Report Map 决定字段位置、位宽和 logical range，并保留 Q36 语义�
   与普通手柄状态合并。
 
 `Q36 for Android`/ShanWan 的键盘型 Map 同样可使用 10 字节专用解码。
-Q34/Q36 如果 CCCD 写入成功却始终没有任何 Input Report，会最多做一次完整的
-加密链路重连；不会因为手柄暂时静止就反复切换 CCCD。
+Q34/Q36 原有的无输入恢复会在 CCCD 写入成功但 2.5 秒内未收到通知时，最多主动
+断开并重连一次。1.1.1 暂时通过 `HIDPAD_ENABLE_NOTIFY_RECONNECT=0` 关闭此路径，
+以排查断线后扫描地址全零的问题；不会因缺少输入通知主动断开连接。
 
 ## 飞智 BLE HID / Android 智连
 

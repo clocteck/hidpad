@@ -54,6 +54,36 @@ int run_tests(void)
 {
     module_ble_event_t e;
     zero_bytes(&e,sizeof(e)); e.irq=MODULE_BLE_IRQ_SCAN_DONE;
+    /* A missing saved address must not block any supported-name fallback. */
+    {
+        const char *names[] = {"Xbox Controller", "Q34", "Q36 for Android",
+                               "BTP-KP20D BFM", "Flydigi APEX 5"};
+        unsigned int i;
+        for (i=0; i<sizeof(names)/sizeof(names[0]); ++i) {
+            setup(); device();
+            copy_text(test_cold.scan_results[0].name,40,names[i],strlen(names[i]));
+            CHECK(should_auto_connect(&test_inst,&test_cold.scan_results[0]));
+            copy_text(test_cold.preferred_address,18,"01:02:03:04:05:07",17);
+            CHECK(should_auto_connect(&test_inst,&test_cold.scan_results[0]));
+            test_inst.scan_active=1; handle_event(&test_inst,&e);
+            CHECK(connects==1 && test_inst.state.connecting);
+        }
+    }
+    setup(); device();
+    copy_text(test_cold.preferred_address,18,"01:02:03:04:05:07",17);
+    copy_text(test_cold.scan_results[0].name,40,"Unknown HID",11);
+    CHECK(!should_auto_connect(&test_inst,&test_cold.scan_results[0]));
+    test_cold.scan_results[1]=test_cold.scan_results[0];
+    copy_text(test_cold.scan_results[1].address,18,test_cold.preferred_address,17);
+    copy_text(test_cold.scan_results[0].name,40,"Xbox Controller",15);
+    test_cold.scan_results[0].score=200; test_cold.scan_results[1].score=1;
+    test_inst.scan_result_count=2;
+    CHECK(select_auto_device(&test_inst)==&test_cold.scan_results[1]);
+    test_inst.auto_connect=0;
+    CHECK(select_auto_device(&test_inst)==NULL);
+    test_inst.auto_connect=1; test_inst.manual_scan=1;
+    CHECK(select_auto_device(&test_inst)==NULL);
+
     setup(); ready(); test_inst.phase=PHASE_PAIRING;
     CHECK(prepare_command(&test_inst,WORKER_COMMAND_SCAN,0)==MODULE_OK);
     execute_worker_command(&test_inst,WORKER_COMMAND_SCAN);
@@ -82,12 +112,18 @@ int run_tests(void)
 
     setup(); test_inst.auto_connect=0; ready(); test_inst.profile=DEVICE_PROFILE_Q36;
     test_inst.subscribed_count=1; test_inst.next_notification_reconnect_ms=clock_ms;
-    poll_notification_reconnect(&test_inst); CHECK(disconnects==1 && test_inst.notification_reconnect_pending);
+    poll_notification_reconnect(&test_inst);
+#if HIDPAD_ENABLE_NOTIFY_RECONNECT
+    CHECK(disconnects==1 && test_inst.notification_reconnect_pending);
     e.irq=MODULE_BLE_IRQ_PERIPHERAL_DISCONNECT; handle_event(&test_inst,&e);
     CHECK(test_inst.phase==PHASE_WAIT_RESCAN);
     clock_ms+=1200; driver_poll(&test_inst); device(); e.irq=MODULE_BLE_IRQ_SCAN_DONE; handle_event(&test_inst,&e);
     CHECK(connects==1); e.irq=MODULE_BLE_IRQ_PERIPHERAL_DISCONNECT; handle_event(&test_inst,&e);
     CHECK(test_inst.phase==PHASE_SELECT_DEVICE && !test_inst.notification_reconnect_pending);
+#else
+    CHECK(disconnects==0 && !test_inst.notification_reconnect_pending);
+    CHECK(test_inst.state.connected && test_inst.phase==PHASE_READY);
+#endif
 
     setup(); device(); prepare_command(&test_inst,WORKER_COMMAND_CONNECT,"01:02:03:04:05:06");
     test_inst.scan_result_count=0; /* Worker execution must not depend on the mutable list. */

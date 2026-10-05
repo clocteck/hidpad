@@ -1,10 +1,13 @@
 # HID Pad
 
-Version / 版本：**1.1.0**
+Version / 版本：**1.1.1**
 
 [中文](#中文) · [English](#english)
 
 ## 中文
+
+1.1.1：恢复首选手柄不在场时自动连接其他受支持手柄；暂时关闭 Q34/Q36 无输入
+通知时的主动断线恢复，全零扫描地址的根因仍在排查。
 
 Holo / Cubic Lua 的常驻 BLE 手柄服务。连接一个手柄，将按键、双摇杆和扳机统一发布到 `controller` 的 `ble-main` 输入源，供游戏等应用使用。
 
@@ -33,7 +36,7 @@ BLE 手柄 → hidpad.so → main.lua → controller / ble-main → 应用
 | 手柄 / 模式 | 当前适配 |
 | --- | --- |
 | Xbox BLE | 主要按键、双摇杆和 LT/RT；含 Elite 2 基础输入，不含拨片、震动 |
-| Q34 / Q34U / Q36 | HID 描述符、部分 ShanWan 10 字节报告及有限连接恢复 |
+| Q34 / Q34U / Q36 | HID 描述符及部分 ShanWan 10 字节报告；无输入主动重连暂时关闭 |
 | 飞智 BLE HID / 安卓智连 | 含八爪鱼 5 的厂商初始化与输入报告适配 |
 | 北通 BFM | 含 KP20D 的 HID 输入、厂商会话和保活适配 |
 | 通用 BLE HID 手柄 | 根据 Report Map 解析方向键、按键、摇杆和扳机 |
@@ -54,6 +57,10 @@ BLE 手柄 → hidpad.so → main.lua → controller / ble-main → 应用
 将 `package/` 内容部署到 `/sd/apps/hidpad/`，保留设备上的 `config.json`，更新后重启 HID Pad 服务。运行包包括 `app.info`、`main.lua`、`main.html`、`info.html` 和 `modules/hidpad.so`。
 
 ## English
+
+1.1.1 restores auto-connect fallback when the preferred controller is absent.
+Q34/Q36 proactive reconnection on missing input notifications is temporarily disabled;
+the cause of all-zero scan addresses is still under investigation.
 
 A persistent BLE controller service for Holo / Cubic Lua. It connects one controller and publishes normalized buttons, dual sticks and triggers to the `controller` source `ble-main` for games and other apps.
 
@@ -82,7 +89,7 @@ On firmware with event callbacks, a dedicated worker serializes BLE operations. 
 | Controller / mode | Implementation |
 | --- | --- |
 | Xbox BLE | Main buttons, sticks and LT/RT; includes Elite 2 basic input, without paddles or rumble |
-| Q34 / Q34U / Q36 | HID descriptors, selected ShanWan 10-byte reports and bounded connection recovery |
+| Q34 / Q34U / Q36 | HID descriptors and selected ShanWan 10-byte reports; no-input proactive reconnection temporarily disabled |
 | Flydigi BLE HID / Android smart mode | Includes APEX 5 vendor initialization and input reports |
 | BTP / BETOP BFM | Includes KP20D HID input, vendor session and keepalive handling |
 | Generic BLE HID controllers | Report Map-based D-pad, button, stick and trigger decoding |

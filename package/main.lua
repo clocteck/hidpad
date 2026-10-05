@@ -1,5 +1,5 @@
 local APP = {
-  VERSION = "1.1.0",
+  VERSION = "1.1.1",
   APP_DIR = "/sd/apps/hidpad",
   MODULE_PATH = "/sd/apps/hidpad/modules/hidpad.so",
   CONFIG_PATH = "/sd/apps/hidpad/config.json",

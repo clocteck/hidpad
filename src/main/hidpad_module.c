@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HIDPAD_VERSION "1.1.50"
+#define HIDPAD_VERSION "1.1.51"
 #define HIDPAD_EXPORT __attribute__((visibility("default")))
 #define HIDPAD_MAX_REPORTS 12
 #define HIDPAD_MAX_SCAN_RESULTS 16
@@ -21,6 +21,8 @@
 #define HIDPAD_BTP_HEARTBEAT_MS 1000u
 #define HIDPAD_FLYDIGI_ACQUIRE_RETRY_MS 500u
 #define HIDPAD_NOTIFY_RECONNECT_MS 2500u
+/* Temporary device A/B test: leave quiet Q34/Q36 connections intact. */
+#define HIDPAD_ENABLE_NOTIFY_RECONNECT 0
 #define HIDPAD_RESCAN_MIN_MS 1000u
 #define HIDPAD_RESCAN_MAX_MS 8000u
 #define HIDPAD_CONN_INTERVAL_MIN 7u
@@ -1541,7 +1543,7 @@ static void complete_ready(hidpad_instance_t *inst)
      * Generic HOGP, including BTP BFM, leaves a successful CCCD subscription
      * undisturbed because quiet notification intervals are valid. */
     inst->next_notification_reconnect_ms =
-        inst->profile == DEVICE_PROFILE_Q36 &&
+        HIDPAD_ENABLE_NOTIFY_RECONNECT && inst->profile == DEVICE_PROFILE_Q36 &&
         inst->notification_reconnect_count == 0 ?
         now_ms(inst) + HIDPAD_NOTIFY_RECONNECT_MS : 0;
     if (is_btp_mapping_mode_name(inst->state.name)) {
@@ -2001,9 +2003,9 @@ static int should_auto_connect(const hidpad_instance_t *inst,
     if (inst->notification_reconnect_pending)
         return text_equal(inst->state.address, device->address);
     if (!inst->auto_connect || inst->manual_scan) return 0;
-    if (inst->cold->preferred_address[0]) {
-        return text_equal(inst->cold->preferred_address, device->address);
-    }
+    /* A saved controller is preferred, not an exclusive address filter. */
+    if (inst->cold->preferred_address[0] &&
+        text_equal(inst->cold->preferred_address, device->address)) return 1;
     return is_auto_connect_name(device->name);
 }
 
@@ -2915,6 +2917,7 @@ static void poll_btp_keepalive(hidpad_instance_t *inst)
 static void poll_notification_reconnect(hidpad_instance_t *inst)
 {
     uint32_t now;
+    if (!HIDPAD_ENABLE_NOTIFY_RECONNECT) return;
     if (!inst || inst->manual_scan || inst->profile != DEVICE_PROFILE_Q36 ||
         inst->phase != PHASE_READY || !inst->state.connected ||
         inst->input_notify_count != 0 || inst->subscribed_count == 0 ||
